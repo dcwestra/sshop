@@ -58,7 +58,7 @@ termui
 
 | Screen | Key | Description |
 |--------|-----|-------------|
-| Home | *(default)* | Alias list with live ping, detail panel, all alias actions |
+| Home | *(default)* | Alias list with live ping, detail panel, all alias actions — click any column header to sort |
 | SFTP | `f` | Dual-pane file browser (upload / download) |
 | Add / Edit | `a` / `e` | Guided alias form |
 | Tunnels | `t` | Named port-forward profiles — start / stop |

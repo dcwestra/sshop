@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen, ModalScreen
@@ -257,10 +258,14 @@ class HomeScreen(Screen):
             return aliases  # default: pinned first, config order
         def sort_key(a: Alias):
             val = getattr(a, self._sort_col)
-            # None sorts last
             if val is None:
-                return (1, "")
-            return (0, str(val).lower() if isinstance(val, str) else val)
+                return (1, [])
+            if isinstance(val, str):
+                # natural sort: split on digit runs so IPs and db1/db10 sort correctly
+                parts = [int(c) if c.isdigit() else c.lower()
+                         for c in re.split(r'(\d+)', val)]
+                return (0, parts)
+            return (0, [val])
         return sorted(aliases, key=sort_key, reverse=self._sort_reverse)
 
     def _load_aliases(self) -> None:
