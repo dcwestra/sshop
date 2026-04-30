@@ -8,7 +8,7 @@ from textual.widgets import Button, DataTable, Label, Static
 from textual.containers import Grid, Horizontal, Vertical
 from textual import work
 
-from termio_tui.config import Alias, load_aliases, load_audit_threshold, load_tunnels, load_snippets
+from termio_tui.config import Alias, load_aliases, load_audit_threshold, effective_threshold, load_tunnels, load_snippets
 from termio_tui.widgets.stats_header import StatsHeader
 from termio_tui.widgets.keybar import KeyBar
 from termio_tui import engine
@@ -56,7 +56,7 @@ _SORT_COLS  = ["name", "hostname", "group", "key_type", "last_connect", "key_age
 _COL_LABELS = ["ALIAS", "HOST", "GROUP", "TYPE", "LAST", "KEY AGE", "PING", "NOTE"]
 
 
-def _key_age_markup(days: int | None, threshold: int) -> str:
+def _key_age_markup(days: int | None, threshold: int | None) -> str:
     if days is None:
         return "[dim]—[/dim]"
     if days < 30:
@@ -66,6 +66,8 @@ def _key_age_markup(days: int | None, threshold: int) -> str:
     else:
         y, mo = divmod(days, 365)
         label = f"{y}y" + (f" {mo // 30}mo" if mo >= 30 else "")
+    if threshold is None:
+        return f"[dim]{label}[/dim]"   # auditing disabled — show age but no colour
     if days >= threshold:
         return f"[red]{label}[/red]"
     if days >= threshold * 0.6:
@@ -77,7 +79,7 @@ def _group_color(group: str) -> str:
     if not group:
         return "white"
     total = sum(ord(c) for c in group)
-    colors = ["cyan", "green", "yellow", "magenta", "bright_red", "bright_cyan"]
+    colors = ["cyan", "green", "yellow", "magenta", "#ff9e64", "bright_cyan"]
     return colors[total % len(colors)]
 
 
@@ -285,6 +287,7 @@ class HomeScreen(Screen):
                 except Exception:
                     pass
 
+        self._row_keys: dict[str, object] = {}
         for a in self._aliases:
             color = _group_color(a.group)
             pin_col = "[yellow]★[/yellow]" if a.pinned else " "
@@ -292,13 +295,14 @@ class HomeScreen(Screen):
             group_col = f"[{color}]◆ {a.group}[/{color}]" if a.group else "[dim]—[/dim]"
             badge_col = _key_badge(a.key_type)
             last_col = a.last_connect[:10] if a.last_connect else "—"
-            age_col = _key_age_markup(a.key_age_days, self._audit_threshold)
+            age_col = _key_age_markup(a.key_age_days, effective_threshold(a))
             ping_col = _latency_markup(a.latency_ms, a.reachable)
-            table.add_row(
+            rk = table.add_row(
                 pin_col, alias_col, a.hostname, group_col, badge_col,
                 last_col, age_col, ping_col, a.note or "",
                 key=a.name,
             )
+            self._row_keys[a.name] = rk
         if self._aliases:
             self.query_one("#detail-panel", DetailPanel).show(self._aliases[0])
 
@@ -474,8 +478,30 @@ class HomeScreen(Screen):
 
     def action_audit(self) -> None:
         code, out = engine.audit()
-        from termio_tui.modals import OutputModal
-        self.app.push_screen(OutputModal("Key Audit", out or "No issues found."))
+        from termio_tui.modals import AuditOutputModal, ThresholdModal
+
+        def _after_audit(open_threshold: bool) -> None:
+            if not open_threshold:
+                return
+            current = load_audit_threshold()
+            self.app.push_screen(ThresholdModal(current), _apply_threshold)
+
+        def _apply_threshold(val: str | None) -> None:
+            if val is None:
+                return
+            val = val.strip().lower()
+            if val in ("off", "never", "disable"):
+                engine.run(["prefer", "audit_threshold", "off"])
+                self.notify("Key rotation auditing disabled.", severity="warning")
+                self._audit_threshold = None
+                self._load_aliases()
+            elif val.isdigit() and int(val) > 0:
+                engine.run(["prefer", "audit_threshold", val])
+                self.notify(f"Rotation threshold set to {val} days.", severity="information")
+                self._audit_threshold = int(val)
+                self._load_aliases()
+
+        self.app.push_screen(AuditOutputModal(out or "No issues found."), _after_audit)
 
     def action_diff(self) -> None:
         code, out = engine.diff()
@@ -573,23 +599,20 @@ class HomeScreen(Screen):
     async def run_status_probes(self) -> None:
         import asyncio
         table = self.query_one("#alias-table", DataTable)
-        tasks = [
-            engine.probe_alias(a.hostname, int(a.port or 22))
-            for a in self._aliases
-            if a.hostname
-        ]
         probed = [a for a in self._aliases if a.hostname]
+        tasks = [engine.probe_alias(a.hostname, int(a.port or 22)) for a in probed]
         results = await asyncio.gather(*tasks, return_exceptions=True)
+        ping_col_key = self._col_keys.get("PING")
         for alias, result in zip(probed, results):
             if isinstance(result, Exception):
                 continue
             reachable, ms = result
             alias.reachable = reachable
             alias.latency_ms = ms
-            try:
-                table.update_cell(alias.name, self._col_keys["PING"], _latency_markup(ms, reachable))
-            except Exception:
-                pass
+            row_key = self._row_keys.get(alias.name)
+            if row_key is None or ping_col_key is None:
+                continue
+            table.update_cell(row_key, ping_col_key, _latency_markup(ms, reachable))
         focused = self._focused_alias()
         if focused:
             self.query_one("#detail-panel", DetailPanel).show(focused)

@@ -36,6 +36,7 @@ class Alias:
     # populated at runtime
     key_type: str = ""   # ed25519 / rsa / ecdsa
     key_age_days: int | None = None
+    audit_threshold: int | None = None   # None = use global
     agent_loaded: bool = False
     latency_ms: int | None = None
     reachable: bool | None = None
@@ -168,12 +169,27 @@ def _key_age_days(identity_file: str) -> int | None:
         return None
 
 
-def load_audit_threshold() -> int:
+def load_audit_threshold() -> int | None:
+    """Return global audit threshold in days, or None if auditing is disabled."""
     prefs = _parse_preferences()
+    raw = prefs.get("audit_threshold", "")
+    if not raw:
+        return 90
+    if raw in ("off", "never", "disabled", "disable"):
+        return None
     try:
-        return int(prefs.get("audit_threshold", "90"))
+        return int(raw)
     except ValueError:
         return 90
+
+
+def effective_threshold(alias: Alias) -> int | None:
+    """Return effective audit threshold for this alias, or None if auditing is disabled."""
+    if alias.audit_threshold == 0:   # sentinel: per-host disabled
+        return None
+    if alias.audit_threshold is not None:
+        return alias.audit_threshold
+    return load_audit_threshold()
 
 
 def load_aliases(show_hidden: bool = False) -> list[Alias]:
@@ -186,6 +202,16 @@ def load_aliases(show_hidden: bool = False) -> list[Alias]:
         a.last_connect = prefs.get(f"last_connect_{a.name}", "")
         a.pinned = a.name in pinned_set
         a.key_age_days = _key_age_days(a.identity_file)
+        raw = prefs.get(f"audit_threshold_{a.name}", "")
+        if raw in ("off", "never", "disabled", "disable"):
+            a.audit_threshold = 0   # sentinel: per-host disabled
+        elif raw:
+            try:
+                a.audit_threshold = int(raw)
+            except ValueError:
+                a.audit_threshold = None
+        else:
+            a.audit_threshold = None
 
     if not show_hidden:
         aliases = [

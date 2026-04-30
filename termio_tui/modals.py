@@ -111,6 +111,17 @@ class RunCmdModal(_InputModal):
         )
 
 
+class ThresholdModal(_InputModal):
+    def __init__(self, current: int | None):
+        cur_str = "off" if current is None else str(current)
+        super().__init__(
+            title="Key rotation threshold",
+            label=f"Days before flagging (current: {cur_str}) — type 'off' to disable, blank to keep",
+            placeholder=cur_str,
+            default=cur_str,
+        )
+
+
 class TagModal(ModalScreen):
     """Manage group tags for an alias. Returns ('tag'|'untag', group) or None."""
 
@@ -272,3 +283,51 @@ class OutputModal(ModalScreen):
 
     def key_escape(self) -> None:
         self.dismiss()
+
+
+class AuditOutputModal(ModalScreen[bool]):
+    """Key audit results with a 'Set Threshold' button alongside Close."""
+
+    DEFAULT_CSS = """
+    AuditOutputModal {
+        align: center middle;
+    }
+    AuditOutputModal > Vertical {
+        width: 80;
+        height: 30;
+        padding: 1 2;
+        border: solid $primary;
+        background: $surface;
+    }
+    AuditOutputModal Static#output {
+        height: 1fr;
+        overflow-y: auto;
+    }
+    AuditOutputModal #btn-row {
+        height: 3;
+        align-horizontal: left;
+        margin-top: 1;
+    }
+    AuditOutputModal #btn-close {
+        dock: right;
+    }
+    """
+
+    def __init__(self, content: str):
+        super().__init__()
+        self._content = content
+
+    def compose(self) -> ComposeResult:
+        from textual.containers import Horizontal
+        with Vertical():
+            yield Static("[bold]Key Audit[/bold]")
+            yield Static(_render(self._content), id="output")
+            with Horizontal(id="btn-row"):
+                yield Button("Set Threshold", variant="default", id="btn-threshold")
+                yield Button("Close", variant="primary", id="btn-close")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "btn-threshold")
+
+    def key_escape(self) -> None:
+        self.dismiss(False)
