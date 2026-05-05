@@ -14,7 +14,7 @@ class StatsHeader(Widget):
         layout: vertical;
         background: #13141f;
         border-bottom: solid #2a2b3d;
-        align: center middle;
+        padding: 1 0 0 0;
     }
     StatsHeader #hdr-top {
         width: 100%;
@@ -23,18 +23,18 @@ class StatsHeader(Widget):
     StatsHeader #hdr-title {
         width: 1fr;
         height: 1;
-        align: left middle;
+        content-align: left middle;
         padding: 0 2;
     }
     StatsHeader #hdr-stats {
         width: 1fr;
         height: 1;
-        align: center middle;
+        content-align: center middle;
     }
     StatsHeader #hdr-clock {
         width: 1fr;
         height: 1;
-        align: right middle;
+        content-align: right middle;
         padding: 0 2;
     }
     """
