@@ -10,32 +10,32 @@ from textual.containers import Horizontal
 class StatsHeader(Widget):
     DEFAULT_CSS = """
     StatsHeader {
-        height: 2;
+        height: 3;
         layout: vertical;
         background: #13141f;
         border-bottom: solid #2a2b3d;
+        align: center middle;
     }
     StatsHeader #hdr-top {
+        width: 100%;
         height: 1;
-        background: #13141f;
     }
     StatsHeader #hdr-title {
         width: 1fr;
         height: 1;
-        content-align: left middle;
-        padding: 0 2;
-    }
-    StatsHeader #hdr-clock {
-        width: auto;
-        height: 1;
-        content-align: right middle;
+        align: left middle;
         padding: 0 2;
     }
     StatsHeader #hdr-stats {
+        width: 1fr;
         height: 1;
-        content-align: left middle;
+        align: center middle;
+    }
+    StatsHeader #hdr-clock {
+        width: 1fr;
+        height: 1;
+        align: right middle;
         padding: 0 2;
-        background: #1a1b26;
     }
     """
 
@@ -43,11 +43,11 @@ class StatsHeader(Widget):
         with Horizontal(id="hdr-top"):
             yield Static(
                 "[bold #ff9e64]⚡ ssh[/bold #ff9e64][dim #ff9e64]op[/dim #ff9e64]"
-                "[dim #565f89]  —  SSH, sorted.[/dim #565f89]",
+                "[dim #565f89]  —  SSH operations, sorted.[/dim #565f89]",
                 id="hdr-title",
             )
+            yield Static("", id="hdr-stats")
             yield Static("", id="hdr-clock")
-        yield Static("", id="hdr-stats")
 
     def on_mount(self) -> None:
         self.set_interval(1, self._tick)
