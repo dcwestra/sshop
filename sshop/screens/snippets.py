@@ -3,8 +3,8 @@ from __future__ import annotations
 import subprocess
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.screen import Screen
-from textual.widgets import DataTable, Static
+from textual.screen import ModalScreen, Screen
+from textual.widgets import Button, DataTable, SelectionList, Static
 from textual.containers import Horizontal, Vertical
 
 from sshop import engine
@@ -13,6 +13,85 @@ from sshop.widgets.stats_header import StatsHeader
 from sshop.widgets.keybar import KeyBar
 
 OKSSH_BIN = engine.OKSSH_BIN
+
+
+class _RunOnModal(ModalScreen[list[str] | None]):
+    """Pick one or more aliases to run a snippet on. Multiple = parallel."""
+
+    BINDINGS = [
+        Binding("enter", "confirm", "Run"),
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    DEFAULT_CSS = """
+    _RunOnModal {
+        align: center middle;
+    }
+    _RunOnModal > Vertical {
+        width: 60;
+        height: auto;
+        max-height: 80vh;
+        padding: 1 2;
+        border: solid #7aa2f7;
+        background: $surface;
+    }
+    _RunOnModal #modal-title {
+        margin-bottom: 1;
+    }
+    _RunOnModal SelectionList {
+        height: auto;
+        max-height: 20;
+        border: none;
+    }
+    _RunOnModal #btn-row {
+        height: 3;
+        align-horizontal: right;
+        margin-top: 1;
+    }
+    _RunOnModal Button {
+        margin-left: 1;
+        min-width: 10;
+    }
+    """
+
+    def __init__(self, snippet_name: str, aliases: list[str]):
+        super().__init__()
+        self._snippet_name = snippet_name
+        self._aliases = aliases
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(
+                f"[bold #ff9e64]Run:[/bold #ff9e64]  [bold]{self._snippet_name}[/bold]\n"
+                f"[dim]Select target host(s) — multiple = parallel[/dim]",
+                id="modal-title",
+            )
+            yield SelectionList(
+                *[(a, a, False) for a in self._aliases],
+                id="alias-list",
+            )
+            with Horizontal(id="btn-row"):
+                yield Button("Run", variant="primary", id="btn-run")
+                yield Button("Cancel", variant="default", id="btn-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#alias-list", SelectionList).focus()
+
+    def action_confirm(self) -> None:
+        selected = list(self.query_one("#alias-list", SelectionList).selected)
+        self.dismiss(selected if selected else None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-run":
+            self.action_confirm()
+        else:
+            self.dismiss(None)
+
+    def key_escape(self) -> None:
+        self.dismiss(None)
 
 
 class SnippetsScreen(Screen):
@@ -103,8 +182,20 @@ class SnippetsScreen(Screen):
         s = self._focused_snippet()
         if not s:
             return
+        aliases = [a.name for a in load_aliases()]
+        self.app.push_screen(
+            _RunOnModal(s.name, aliases),
+            callback=lambda targets: self._on_run_targets(s.name, targets),
+        )
+
+    def _on_run_targets(self, snip_name: str, targets: list[str] | None) -> None:
+        if not targets:
+            return
+        cmd = [OKSSH_BIN, "snip", "run", snip_name] + targets
+        if len(targets) > 1:
+            cmd.append("--parallel")
         with self.app.suspend():
-            subprocess.run([OKSSH_BIN, "snip", "run", s.name])
+            subprocess.run(cmd)
 
     def action_edit_snippet(self) -> None:
         s = self._focused_snippet()
