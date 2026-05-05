@@ -8,10 +8,10 @@ from textual.widgets import Button, DataTable, Label, Static
 from textual.containers import Grid, Horizontal, Vertical
 from textual import work
 
-from termio_tui.config import Alias, load_aliases, load_audit_threshold, effective_threshold, load_tunnels, load_snippets
-from termio_tui.widgets.stats_header import StatsHeader
-from termio_tui.widgets.keybar import KeyBar
-from termio_tui import engine
+from sshop.config import Alias, load_aliases, load_audit_threshold, effective_threshold, load_tunnels, load_snippets
+from sshop.widgets.stats_header import StatsHeader
+from sshop.widgets.keybar import KeyBar
+from sshop import engine
 
 
 _HELP_TEXT = """\
@@ -355,7 +355,7 @@ class HomeScreen(Screen):
     def action_sftp(self) -> None:
         alias = self._focused_alias()
         if alias:
-            from termio_tui.screens.sftp import SftpScreen
+            from sshop.screens.sftp import SftpScreen
             self.app.push_screen(SftpScreen(alias))
 
     def action_wake(self) -> None:
@@ -389,7 +389,7 @@ class HomeScreen(Screen):
     def action_rename(self) -> None:
         alias = self._focused_alias()
         if alias:
-            from termio_tui.modals import RenameModal
+            from sshop.modals import RenameModal
             self.app.push_screen(RenameModal(alias.name), callback=self._on_rename)
 
     def _on_rename(self, new_name: str | None) -> None:
@@ -405,7 +405,7 @@ class HomeScreen(Screen):
     def action_clone(self) -> None:
         alias = self._focused_alias()
         if alias:
-            from termio_tui.modals import CloneModal
+            from sshop.modals import CloneModal
             self.app.push_screen(CloneModal(alias.name), callback=lambda dest: self._on_clone(alias.name, dest))
 
     def _on_clone(self, src: str, dest: str | None) -> None:
@@ -417,14 +417,14 @@ class HomeScreen(Screen):
     def action_run_cmd(self) -> None:
         alias = self._focused_alias()
         if alias:
-            from termio_tui.modals import RunCmdModal
+            from sshop.modals import RunCmdModal
             self.app.push_screen(RunCmdModal(alias.name), callback=lambda cmd: self._on_run_cmd(alias.name, cmd))
 
     def _on_run_cmd(self, alias_name: str, cmd: str | None) -> None:
         if cmd:
             code, out = engine.run_remote(alias_name, cmd)
-            from termio_tui.modals import OutputModal
-            self.app.push_screen(OutputModal(f"termio run {alias_name}", out or "(no output)"))
+            from sshop.modals import OutputModal
+            self.app.push_screen(OutputModal(f"okssh run {alias_name}", out or "(no output)"))
 
     def action_delete(self) -> None:
         alias = self._focused_alias()
@@ -444,41 +444,41 @@ class HomeScreen(Screen):
     # ── screen navigation ──────────────────────────────────────────────────────
 
     def action_add(self) -> None:
-        from termio_tui.screens.add_edit import AddEditScreen
+        from sshop.screens.add_edit import AddEditScreen
         self.app.push_screen(AddEditScreen(), callback=lambda _: self._load_aliases())
 
     def action_edit(self) -> None:
         alias = self._focused_alias()
         if alias:
-            from termio_tui.screens.add_edit import AddEditScreen
+            from sshop.screens.add_edit import AddEditScreen
             self.app.push_screen(AddEditScreen(alias.name), callback=lambda _: self._load_aliases())
 
     def action_tunnels(self) -> None:
-        from termio_tui.screens.tunnels import TunnelsScreen
+        from sshop.screens.tunnels import TunnelsScreen
         self.app.push_screen(TunnelsScreen())
 
     def action_snippets(self) -> None:
-        from termio_tui.screens.snippets import SnippetsScreen
+        from sshop.screens.snippets import SnippetsScreen
         alias = self._focused_alias()
         self.app.push_screen(SnippetsScreen(focused_alias=alias.name if alias else None))
 
     def action_log(self) -> None:
-        from termio_tui.screens.log import LogScreen
+        from sshop.screens.log import LogScreen
         self.app.push_screen(LogScreen())
 
     def action_agent(self) -> None:
-        from termio_tui.screens.agent import AgentScreen
+        from sshop.screens.agent import AgentScreen
         self.app.push_screen(AgentScreen())
 
     def action_backup(self) -> None:
-        from termio_tui.screens.backup import BackupScreen
+        from sshop.screens.backup import BackupScreen
         self.app.push_screen(BackupScreen())
 
     # ── global actions ─────────────────────────────────────────────────────────
 
     def action_audit(self) -> None:
         code, out = engine.audit()
-        from termio_tui.modals import AuditOutputModal, ThresholdModal
+        from sshop.modals import AuditOutputModal, ThresholdModal
 
         def _after_audit(open_threshold: bool) -> None:
             if not open_threshold:
@@ -505,19 +505,19 @@ class HomeScreen(Screen):
 
     def action_diff(self) -> None:
         code, out = engine.diff()
-        from termio_tui.modals import OutputModal
+        from sshop.modals import OutputModal
         label = "Sync Diff" + (" [dim](no sync folder configured)[/dim]" if code != 0 else "")
         self.app.push_screen(OutputModal(label, out or "No differences found."))
 
     def action_export(self) -> None:
-        from termio_tui.modals import ExportFormatModal
+        from sshop.modals import ExportFormatModal
         self.app.push_screen(ExportFormatModal(), callback=self._on_export_format)
 
     def _on_export_format(self, fmt: str | None) -> None:
         if fmt is None:
             return
         code, out = engine.export_aliases("ansible" if fmt == "ansible" else "")
-        from termio_tui.modals import OutputModal
+        from sshop.modals import OutputModal
         title = "Export — Ansible inventory" if fmt == "ansible" else "Export — SSH config"
         self.app.push_screen(OutputModal(title, out or "(no output)"))
 
@@ -525,7 +525,7 @@ class HomeScreen(Screen):
         alias = self._focused_alias()
         if not alias:
             return
-        from termio_tui.modals import TagModal
+        from sshop.modals import TagModal
         self.app.push_screen(
             TagModal(alias.name, alias.group),
             callback=lambda result: self._on_tag(alias.name, result),
@@ -560,17 +560,17 @@ class HomeScreen(Screen):
                 engine.connect_with_profile(alias.name)
 
     def action_templates(self) -> None:
-        from termio_tui.screens.templates import TemplatesScreen
+        from sshop.screens.templates import TemplatesScreen
         self.app.push_screen(TemplatesScreen())
 
     def action_bootstrap(self) -> None:
         alias = self._focused_alias()
         if alias:
-            from termio_tui.screens.bootstrap import BootstrapScreen
+            from sshop.screens.bootstrap import BootstrapScreen
             self.app.push_screen(BootstrapScreen(alias))
 
     def action_help(self) -> None:
-        from termio_tui.modals import OutputModal
+        from sshop.modals import OutputModal
         self.app.push_screen(OutputModal("Keybindings", _HELP_TEXT))
 
     def action_refresh(self) -> None:
@@ -585,7 +585,7 @@ class HomeScreen(Screen):
     @work(thread=True)
     def _startup_audit_check(self) -> None:
         code, out = engine.audit()
-        # termio audit exits non-zero when any key is overdue; also check
+        # okssh audit exits non-zero when any key is overdue; also check
         # for the word "overdue" as a belt-and-suspenders guard
         if code != 0 or "overdue" in out.lower():
             self.app.call_from_thread(

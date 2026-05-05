@@ -14,7 +14,7 @@ _ANSI_RE = re.compile(r'\x1b(?:\[[0-9;]*[mKGHFJsun]|[^[[])|[\x00-\x08\x0b-\x1f\x
 
 
 def _render(content: str) -> Text:
-    """Convert termio ANSI output to a Rich Text object for clean modal display."""
+    """Convert okssh ANSI output to a Rich Text object for clean modal display."""
     return Text.from_ansi(content)
 
 

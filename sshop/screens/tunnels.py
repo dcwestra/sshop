@@ -7,12 +7,12 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Static
 from textual.containers import Vertical
 
-from termio_tui import engine
-from termio_tui.config import Tunnel, load_aliases, load_tunnels, load_snippets
-from termio_tui.widgets.stats_header import StatsHeader
-from termio_tui.widgets.keybar import KeyBar
+from sshop import engine
+from sshop.config import Tunnel, load_aliases, load_tunnels, load_snippets
+from sshop.widgets.stats_header import StatsHeader
+from sshop.widgets.keybar import KeyBar
 
-TERMIO_BIN = engine.TERMIO_BIN
+OKSSH_BIN = engine.OKSSH_BIN
 
 _TYPE_COLOR = {
     "local":  "#7dcfff",
@@ -94,7 +94,7 @@ class TunnelsScreen(Screen):
 
     def action_add(self) -> None:
         with self.app.suspend():
-            subprocess.run([TERMIO_BIN, "tunnel", "add"])
+            subprocess.run([OKSSH_BIN, "tunnel", "add"])
         self._load()
 
     def action_delete(self) -> None:

@@ -7,16 +7,16 @@ from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Input, Label, Select, Static
 from textual.containers import Horizontal, Vertical, ScrollableContainer
 
-from termio_tui import engine
-from termio_tui.config import load_aliases
+from sshop import engine
+from sshop.config import load_aliases
 
-TERMIO_BIN = engine.TERMIO_BIN
+OKSSH_BIN = engine.OKSSH_BIN
 
 
 class AddEditScreen(Screen):
     """
-    Launches termio add / termio edit in the terminal (via suspend).
-    The form is handled by termio's own wizard — we just hand off.
+    Launches okssh add / okssh edit in the terminal (via suspend).
+    The form is handled by okssh's own wizard — we just hand off.
     """
 
     BINDINGS = [
@@ -33,13 +33,13 @@ class AddEditScreen(Screen):
             if self._alias:
                 yield Static(
                     f"\n  [bold]Editing alias:[/bold] [cyan]{self._alias}[/cyan]\n\n"
-                    f"  This will open the termio edit wizard in your terminal.\n",
+                    f"  This will open the okssh edit wizard in your terminal.\n",
                     id="info"
                 )
             else:
                 yield Static(
                     "\n  [bold]Add new alias[/bold]\n\n"
-                    "  This will open the termio add wizard in your terminal.\n",
+                    "  This will open the okssh add wizard in your terminal.\n",
                     id="info"
                 )
             with Horizontal(id="buttons"):
@@ -54,7 +54,7 @@ class AddEditScreen(Screen):
         if event.button.id == "btn-go":
             args = ["edit", self._alias] if self._alias else ["add"]
             with self.app.suspend():
-                subprocess.run([TERMIO_BIN, *args])
+                subprocess.run([OKSSH_BIN, *args])
             self.dismiss(True)
         elif event.button.id == "btn-cancel":
             self.dismiss(False)

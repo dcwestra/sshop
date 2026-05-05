@@ -42,7 +42,7 @@ class StatsHeader(Widget):
     def compose(self) -> ComposeResult:
         with Horizontal(id="hdr-top"):
             yield Static(
-                "[bold #ff9e64]⚡ term[/bold #ff9e64][dim #ff9e64]ui[/dim #ff9e64]"
+                "[bold #ff9e64]⚡ ssh[/bold #ff9e64][dim #ff9e64]op[/dim #ff9e64]"
                 "[dim #565f89]  —  SSH, sorted.[/dim #565f89]",
                 id="hdr-title",
             )

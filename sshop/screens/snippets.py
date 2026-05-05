@@ -7,12 +7,12 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Static
 from textual.containers import Horizontal, Vertical
 
-from termio_tui import engine
-from termio_tui.config import Snippet, load_aliases, load_snippets, load_tunnels
-from termio_tui.widgets.stats_header import StatsHeader
-from termio_tui.widgets.keybar import KeyBar
+from sshop import engine
+from sshop.config import Snippet, load_aliases, load_snippets, load_tunnels
+from sshop.widgets.stats_header import StatsHeader
+from sshop.widgets.keybar import KeyBar
 
-TERMIO_BIN = engine.TERMIO_BIN
+OKSSH_BIN = engine.OKSSH_BIN
 
 
 class SnippetsScreen(Screen):
@@ -109,7 +109,7 @@ class SnippetsScreen(Screen):
                         severity="warning")
             return
         with self.app.suspend():
-            subprocess.run([TERMIO_BIN, "snip", "run", s.name, self._focused_alias])
+            subprocess.run([OKSSH_BIN, "snip", "run", s.name, self._focused_alias])
 
     def action_run_parallel(self) -> None:
         s = self._focused_snippet()
@@ -119,20 +119,20 @@ class SnippetsScreen(Screen):
             self.notify("No alias selected", severity="warning")
             return
         with self.app.suspend():
-            subprocess.run([TERMIO_BIN, "snip", "run", s.name, self._focused_alias, "--parallel"])
+            subprocess.run([OKSSH_BIN, "snip", "run", s.name, self._focused_alias, "--parallel"])
 
     def action_edit_snippet(self) -> None:
         s = self._focused_snippet()
         if s:
             with self.app.suspend():
-                subprocess.run([TERMIO_BIN, "snip", "edit", s.name])
+                subprocess.run([OKSSH_BIN, "snip", "edit", s.name])
             self._load()
 
     def action_run_group(self) -> None:
         s = self._focused_snippet()
         if not s:
             return
-        from termio_tui.modals import _InputModal
+        from sshop.modals import _InputModal
         self.app.push_screen(
             _InputModal(
                 title=f"Run '{s.name}' on group",
@@ -145,16 +145,16 @@ class SnippetsScreen(Screen):
     def _on_run_group(self, snip_name: str, group: str | None) -> None:
         if group:
             with self.app.suspend():
-                subprocess.run([TERMIO_BIN, "snip", "run", snip_name, "--group", group])
+                subprocess.run([OKSSH_BIN, "snip", "run", snip_name, "--group", group])
 
     def action_add(self) -> None:
         with self.app.suspend():
-            subprocess.run([TERMIO_BIN, "snip", "add"])
+            subprocess.run([OKSSH_BIN, "snip", "add"])
         self._load()
 
     def action_delete(self) -> None:
         s = self._focused_snippet()
         if s:
             with self.app.suspend():
-                subprocess.run([TERMIO_BIN, "snip", "rm", s.name])
+                subprocess.run([OKSSH_BIN, "snip", "rm", s.name])
             self._load()

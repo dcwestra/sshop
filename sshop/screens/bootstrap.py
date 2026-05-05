@@ -7,15 +7,15 @@ from textual.screen import Screen
 from textual.widgets import Button, DataTable, Static
 from textual.containers import Horizontal, Vertical
 
-from termio_tui import engine
-from termio_tui.config import Alias, load_aliases
-from termio_tui.widgets.stats_header import StatsHeader
-from termio_tui.widgets.keybar import KeyBar
+from sshop import engine
+from sshop.config import Alias, load_aliases
+from sshop.widgets.stats_header import StatsHeader
+from sshop.widgets.keybar import KeyBar
 
 
 def _bootstrap_status(alias_name: str) -> str:
     """Read the bootstrap install date from preferences, or empty string."""
-    from termio_tui.config import _parse_preferences
+    from sshop.config import _parse_preferences
     prefs = _parse_preferences()
     return prefs.get(f"bootstrap_{alias_name}", "")
 
@@ -78,7 +78,7 @@ class BootstrapScreen(Screen):
 
     def on_mount(self) -> None:
         try:
-            from termio_tui.config import load_aliases, load_tunnels, load_snippets
+            from sshop.config import load_aliases, load_tunnels, load_snippets
             self.query_one("#bs-header", StatsHeader).update_stats(
                 len(load_aliases()), len(load_tunnels()), len(load_snippets())
             )

@@ -1,37 +1,37 @@
-# termui
+# sshop
 
-A keyboard-driven terminal UI for [termio](https://github.com/dcwestra/termio) — the POSIX SSH connection manager.
+A keyboard-driven terminal UI for [okssh](https://github.com/dcwestra/okssh) — the POSIX SSH connection manager.
 
-termui wraps the termio CLI in a visual interface built with [Textual](https://github.com/Textualize/textual), giving you a live alias list, detail panel, and quick access to every termio feature without leaving your terminal.
+sshop wraps the okssh CLI in a visual interface built with [Textual](https://github.com/Textualize/textual), giving you a live alias list, detail panel, and quick access to every okssh feature without leaving your terminal.
 
 <img width="1911" height="994" alt="Screenshot_20260430_113724" src="https://github.com/user-attachments/assets/ca5c748e-5197-4392-8205-7933e5450d9b" />
 
 ---
 
-## What termio brings to the table
+## What okssh brings to the table
 
-termui is a front-end. The interesting parts live in [termio](https://github.com/dcwestra/termio) — a single POSIX shell script with no runtime dependencies beyond OpenSSH. A few highlights that are worth knowing about before you decide whether to try either tool:
+sshop is a front-end. The interesting parts live in [okssh](https://github.com/dcwestra/okssh) — a single POSIX shell script with no runtime dependencies beyond OpenSSH. A few highlights that are worth knowing about before you decide whether to try either tool:
 
 **Your snippet library follows you into every SSH session.**
-termio lets you build a library of reusable shell commands (snippets). Bootstrap a remote host once and `Ctrl+X s` opens a fuzzy picker of your snippets directly in the remote shell — in both bash and zsh, without installing anything heavy on the server.
+okssh lets you build a library of reusable shell commands (snippets). Bootstrap a remote host once and `Ctrl+X s` opens a fuzzy picker of your snippets directly in the remote shell — in both bash and zsh, without installing anything heavy on the server.
 
 **Run a snippet across a whole group of hosts at once.**
-Tag your aliases into groups (`homelab`, `prod`, `pi-cluster`). From termui's Snippets screen, run any snippet against every host in a group in parallel and collect the output — handy for rolling restarts, config pushes, or health checks.
+Tag your aliases into groups (`homelab`, `prod`, `pi-cluster`). From sshop's Snippets screen, run any snippet against every host in a group in parallel and collect the output — handy for rolling restarts, config pushes, or health checks.
 
 **Named SSH tunnels you can start and stop by name.**
-Instead of remembering `ssh -L 5432:db:5432 jumphost`, define a tunnel once (`termio tunnel add`) and start or stop it by name from the Tunnels screen. Tunnels persist across sessions and can be set to auto-start on connect.
+Instead of remembering `ssh -L 5432:db:5432 jumphost`, define a tunnel once (`okssh tunnel add`) and start or stop it by name from the Tunnels screen. Tunnels persist across sessions and can be set to auto-start on connect.
 
 **SSH key rotation that actually does the work.**
 `k` on any alias rotates the key: generates a new key pair, copies the public key to the remote, updates `~/.ssh/config`, and optionally syncs the new key to your sync folder — all in one step.
 
 **Your entire SSH setup syncs across machines.**
-Point termio at a shared folder (NAS, Syncthing, Dropbox) and your aliases, snippets, and preferences stay in sync across every machine you work from. Key files can optionally be included as an AES-256 encrypted archive.
+Point okssh at a shared folder (NAS, Syncthing, Dropbox) and your aliases, snippets, and preferences stay in sync across every machine you work from. Key files can optionally be included as an AES-256 encrypted archive.
 
 ---
 
 ## Requirements
 
-- **[termio](https://github.com/dcwestra/termio)** installed at `/usr/local/bin/termio`
+- **[okssh](https://github.com/dcwestra/okssh)** installed at `/usr/local/bin/okssh`
 - Python 3.11+
 - Textual 0.89+
 
@@ -40,16 +40,16 @@ Point termio at a shared folder (NAS, Syncthing, Dropbox) and your aliases, snip
 ## Install
 
 ```sh
-pip install --user git+https://github.com/dcwestra/termui.git
-termui
+pip install --user git+https://github.com/dcwestra/sshop.git
+sshop
 ```
 
 Or clone and install in editable mode for development:
 
 ```sh
-git clone https://github.com/dcwestra/termui.git
-pip install --user -e termui/
-termui
+git clone https://github.com/dcwestra/sshop.git
+pip install --user -e sshop/
+sshop
 ```
 
 ---
@@ -92,7 +92,7 @@ termui
 ## Design
 
 - **Tokyo Night** colour palette throughout
-- All mutations go through the `termio` CLI — termui never writes config files directly
+- All mutations go through the `okssh` CLI — sshop never writes config files directly
 - Blocking terminal ops (connect, SFTP, rotate) use `app.suspend()` so the TUI cleanly hands the terminal over and reclaims it on exit
 - Read-only config parsing (aliases, tunnels, snippets, history) done directly in Python for speed
 

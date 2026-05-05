@@ -4,14 +4,14 @@ from pathlib import Path
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 
-from termio_tui.screens.home import HomeScreen
+from sshop.screens.home import HomeScreen
 
-CSS_PATH = Path(__file__).parent.parent / "termio_tui.tcss"
+CSS_PATH = Path(__file__).parent.parent / "sshop.tcss"
 
 
-class TermioApp(App):
+class SshopApp(App):
     CSS_PATH = str(CSS_PATH)
-    TITLE = "termui"
+    TITLE = "sshop"
 
     BINDINGS = [
         Binding("ctrl+q", "quit", "Quit", show=False),
@@ -23,7 +23,7 @@ class TermioApp(App):
 
 
 def main() -> None:
-    TermioApp().run()
+    SshopApp().run()
 
 
 if __name__ == "__main__":

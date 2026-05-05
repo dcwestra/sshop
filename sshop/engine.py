@@ -1,4 +1,4 @@
-"""Wraps the termio CLI for all mutation operations."""
+"""Wraps the okssh CLI for all mutation operations."""
 
 from __future__ import annotations
 
@@ -9,16 +9,16 @@ import subprocess
 import time
 from pathlib import Path
 
-TERMIO_BIN = shutil.which("termio") or "/usr/local/bin/termio"
+OKSSH_BIN = shutil.which("okssh") or "/usr/local/bin/okssh"
 
-# Force CLI mode so termio never tries to open whiptail dialogs
+# Force CLI mode so okssh never tries to open whiptail dialogs
 _CLI_ENV = {**os.environ, "HAS_WHIPTAIL": "0"}
 
 
 def run(args: list[str], input_text: str | None = None) -> tuple[int, str, str]:
-    """Run a termio subcommand synchronously. Returns (returncode, stdout, stderr)."""
+    """Run a okssh subcommand synchronously. Returns (returncode, stdout, stderr)."""
     result = subprocess.run(
-        [TERMIO_BIN, *args],
+        [OKSSH_BIN, *args],
         capture_output=True,
         text=True,
         input=input_text,
@@ -30,7 +30,7 @@ def run(args: list[str], input_text: str | None = None) -> tuple[int, str, str]:
 async def run_async(args: list[str]) -> tuple[int, str, str]:
     """Async variant for non-blocking calls from Textual workers."""
     proc = await asyncio.create_subprocess_exec(
-        TERMIO_BIN,
+        OKSSH_BIN,
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -62,14 +62,14 @@ async def probe_alias(hostname: str, port: int = 22, timeout: int = 5) -> tuple[
 
 def connect(alias: str) -> None:
     """
-    Hand the terminal to termio connect. Called from within app.suspend() context.
+    Hand the terminal to okssh connect. Called from within app.suspend() context.
     Blocks until the SSH session ends.
     """
-    subprocess.run([TERMIO_BIN, "connect", alias])
+    subprocess.run([OKSSH_BIN, "connect", alias])
 
 
 def remove_alias(alias: str) -> tuple[int, str]:
-    # pipe "y" to answer termio's confirmation prompt
+    # pipe "y" to answer okssh's confirmation prompt
     code, out, err = run(["rm", alias], input_text="y\n")
     return code, err or out
 
@@ -104,12 +104,12 @@ def snip_run(name: str, alias: str, parallel: bool = False) -> tuple[int, str]:
 
 def open_sftp(alias: str) -> None:
     """Open SFTP session — blocks until closed."""
-    subprocess.run([TERMIO_BIN, "open", alias])
+    subprocess.run([OKSSH_BIN, "open", alias])
 
 
 def rotate_key(alias: str) -> None:
     """Interactive key rotation — blocks."""
-    subprocess.run([TERMIO_BIN, "rotate", alias])
+    subprocess.run([OKSSH_BIN, "rotate", alias])
 
 
 def run_remote(alias: str, cmd: str) -> tuple[int, str]:
@@ -124,7 +124,7 @@ def rename_alias(old: str, new: str) -> tuple[int, str]:
 
 def clone_alias(src: str, dest: str) -> None:
     """Interactive clone wizard — blocks."""
-    subprocess.run([TERMIO_BIN, "clone", src, dest])
+    subprocess.run([OKSSH_BIN, "clone", src, dest])
 
 
 def pin_alias(alias: str) -> tuple[int, str]:
@@ -190,7 +190,7 @@ def untag_alias(alias: str, group: str) -> tuple[int, str]:
 
 def connect_with_profile(alias: str) -> None:
     """Connect with ephemeral profile — blocks, call inside app.suspend()."""
-    subprocess.run([TERMIO_BIN, "connect", "--profile", alias])
+    subprocess.run([OKSSH_BIN, "connect", "--profile", alias])
 
 
 def diff() -> tuple[int, str]:
@@ -209,8 +209,8 @@ def template_remove(name: str) -> tuple[int, str]:
 
 
 def bootstrap_install(alias: str) -> None:
-    """Run termio bootstrap <alias> — interactive, blocks."""
-    subprocess.run([TERMIO_BIN, "bootstrap", alias])
+    """Run okssh bootstrap <alias> — interactive, blocks."""
+    subprocess.run([OKSSH_BIN, "bootstrap", alias])
 
 
 def bootstrap_update(alias: str) -> tuple[int, str]:

@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "termio-tui"
+name = "sshop"
 version = "0.1.0"
-description = "Textual TUI frontend for termio"
+description = "Textual TUI frontend for okssh"
 requires-python = ">=3.11"
 dependencies = [
     "textual>=0.89.0",
@@ -13,8 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
-termui     = "termio_tui.app:main"
-termio-tui = "termio_tui.app:main"
+sshop = "sshop.app:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["termio_tui"]
+packages = ["sshop"]

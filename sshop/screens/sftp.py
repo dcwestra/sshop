@@ -12,9 +12,9 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Static
 from textual.containers import Horizontal, Vertical
 
-from termio_tui.config import Alias, load_aliases, load_tunnels, load_snippets
-from termio_tui.widgets.keybar import KeyBar
-from termio_tui.widgets.stats_header import StatsHeader
+from sshop.config import Alias, load_aliases, load_tunnels, load_snippets
+from sshop.widgets.keybar import KeyBar
+from sshop.widgets.stats_header import StatsHeader
 
 
 # ── file entry ─────────────────────────────────────────────────────────────────

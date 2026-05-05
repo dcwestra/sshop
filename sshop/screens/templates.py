@@ -6,10 +6,10 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Static
 from textual.containers import Horizontal, Vertical
 
-from termio_tui import engine
-from termio_tui.config import Template, load_templates
-from termio_tui.widgets.stats_header import StatsHeader
-from termio_tui.widgets.keybar import KeyBar
+from sshop import engine
+from sshop.config import Template, load_templates
+from sshop.widgets.stats_header import StatsHeader
+from sshop.widgets.keybar import KeyBar
 
 
 class TemplateDetail(Static):
@@ -79,7 +79,7 @@ class TemplatesScreen(Screen):
         table.add_columns("NAME", "USER", "PORT", "GROUP", "KEY TYPE")
         self._load()
         try:
-            from termio_tui.config import load_aliases, load_tunnels, load_snippets
+            from sshop.config import load_aliases, load_tunnels, load_snippets
             self.query_one("#tmpl-header", StatsHeader).update_stats(
                 len(load_aliases()), len(load_tunnels()), len(load_snippets())
             )

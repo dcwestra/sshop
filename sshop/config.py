@@ -1,4 +1,4 @@
-"""Reads termio config files directly — no subprocess needed for display data."""
+"""Reads okssh config files directly — no subprocess needed for display data."""
 
 from __future__ import annotations
 
@@ -10,12 +10,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 SSH_CONFIG = Path.home() / ".ssh" / "config"
-TERMIO_DIR = Path.home() / ".config" / "termio"
-PREFS_FILE = TERMIO_DIR / "preferences"
-SNIPPETS_FILE = TERMIO_DIR / "snippets"
-TUNNELS_FILE = TERMIO_DIR / "tunnels"
-HISTORY_LOG = TERMIO_DIR / "history.log"
-TEMPLATES_FILE = TERMIO_DIR / "templates"
+OKSSH_DIR = Path.home() / ".config" / "okssh"
+PREFS_FILE = OKSSH_DIR / "preferences"
+SNIPPETS_FILE = OKSSH_DIR / "snippets"
+TUNNELS_FILE = OKSSH_DIR / "tunnels"
+HISTORY_LOG = OKSSH_DIR / "history.log"
+TEMPLATES_FILE = OKSSH_DIR / "templates"
 
 
 @dataclass
