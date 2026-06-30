@@ -191,6 +191,7 @@ class HomeScreen(Screen):
         Binding("P", "connect_profile", "Connect+profile", show=False),
         Binding("e", "edit", "Edit"),
         Binding("a", "add", "Add"),
+        Binding("I", "import_key", "Import key", show=False),
         Binding("D", "delete", "Delete", show=False),
         Binding("f", "sftp", "SFTP", show=False),
         Binding("w", "wake", "Wake", show=False),
@@ -471,6 +472,12 @@ class HomeScreen(Screen):
     def action_add(self) -> None:
         from sshop.screens.add_edit import AddEditScreen
         self.app.push_screen(AddEditScreen(), callback=lambda _: self._load_aliases())
+
+    def action_import_key(self) -> None:
+        with self.app.suspend():
+            import subprocess
+            subprocess.run([engine.OKSSH_BIN, "import-key"], env=engine._CLI_ENV)
+        self._load_aliases()
 
     def action_edit(self) -> None:
         alias = self._focused_alias()
