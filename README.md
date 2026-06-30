@@ -58,9 +58,11 @@ sshop
 
 | Screen | Key | Description |
 |--------|-----|-------------|
-| Home | *(default)* | Alias list with live ping, detail panel, all alias actions — click any column header to sort |
+| Home | *(default)* | Alias list with live ping, detail panel, and all alias actions — click any column header to sort |
 | SFTP | `f` | Dual-pane file browser (upload / download) |
-| Add / Edit | `a` / `e` | Guided alias form |
+| Add Alias | `a` | Native form — alias, host, port, user, key source, note, group, jump host |
+| Import Key | `I` | Register a private key sent to you — browse or drag-and-drop the key file |
+| Edit Alias | `e` | Opens okssh interactive edit wizard in the terminal |
 | Tunnels | `t` | Named port-forward profiles — start / stop |
 | Snippets | `s` | Reusable remote commands — run on alias or group |
 | SSH Agent | `G` | Key list — add / remove / clear |
@@ -73,10 +75,13 @@ sshop
 
 | Key | Action |
 |-----|--------|
-| `↵` | Connect |
+| `↵` | Connect (keyboard) |
+| double-click | Connect (mouse) |
 | `P` | Connect with ephemeral profile |
 | `f` | SFTP browser |
-| `e` | Edit alias |
+| `a` | Add new alias (native form) |
+| `I` | Import a key file |
+| `e` | Edit alias (okssh wizard) |
 | `k` | Rotate SSH key |
 | `p` | Pin / unpin |
 | `n` | Rename |
@@ -93,7 +98,8 @@ sshop
 
 - **Tokyo Night** colour palette throughout
 - All mutations go through the `okssh` CLI — sshop never writes config files directly
-- Blocking terminal ops (connect, SFTP, rotate) use `app.suspend()` so the TUI cleanly hands the terminal over and reclaims it on exit
+- The Add and Import Key screens are fully native Textual forms — no terminal handoff. The Add screen includes a `Select` to choose between generating a new key (collects key type and password for `ssh-copy-id`) or importing an existing one (file picker, supports drag-and-drop from a file manager)
+- Blocking terminal ops (connect, SFTP, rotate, edit) use `app.suspend()` so the TUI cleanly hands the terminal over and reclaims it on exit
 - Read-only config parsing (aliases, tunnels, snippets, history) done directly in Python for speed
 
 ---
