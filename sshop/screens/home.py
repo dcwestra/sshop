@@ -470,8 +470,8 @@ class HomeScreen(Screen):
     # ── screen navigation ──────────────────────────────────────────────────────
 
     def action_add(self) -> None:
-        from sshop.screens.add_edit import AddEditScreen
-        self.app.push_screen(AddEditScreen(), callback=lambda _: self._load_aliases())
+        from sshop.screens.add_alias import AddAliasScreen
+        self.app.push_screen(AddAliasScreen(), callback=lambda _: self._load_aliases())
 
     def action_import_key(self) -> None:
         from sshop.screens.import_key import ImportKeyScreen

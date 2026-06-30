@@ -228,6 +228,30 @@ def bootstrap_list() -> tuple[int, str]:
     return code, out + err
 
 
+def add_alias(
+    alias: str,
+    host: str,
+    user: str,
+    port: int = 22,
+    key_type: str = "ed25519",
+    password: str = "",
+    key_file: str = "",
+    note: str = "",
+    group: str = "",
+    jump: str = "",
+) -> tuple[int, str]:
+    """Add a new alias non-interactively.
+
+    Pass key_file to import an existing key (skip keygen + ssh-copy-id).
+    Otherwise key_type + password are used to generate a new key.
+    """
+    key_spec = f"import:{key_file}" if key_file else key_type
+    args = ["add", alias, host, user, str(port), key_spec, password,
+            note, group, jump]
+    code, out, err = run(args)
+    return code, err or out
+
+
 def import_key(
     alias: str,
     key_file: str,
