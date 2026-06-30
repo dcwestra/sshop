@@ -4,13 +4,13 @@ import subprocess
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import Button, Footer, Header, Input, Label, Select, Static
-from textual.containers import Horizontal, Vertical, ScrollableContainer
+from textual.widgets import Button, Footer, Header, Static
+from textual.containers import Horizontal, Vertical
 
 from sshop import engine
-from sshop.config import load_aliases
 
 OKSSH_BIN = engine.OKSSH_BIN
+_CLI_ENV = engine._CLI_ENV
 
 
 class AddEditScreen(Screen):
@@ -39,7 +39,8 @@ class AddEditScreen(Screen):
             else:
                 yield Static(
                     "\n  [bold]Add new alias[/bold]\n\n"
-                    "  This will open the okssh add wizard in your terminal.\n",
+                    "  This will open the okssh add wizard in your terminal.\n"
+                    "  To register a key [italic]sent to you[/italic] (no keygen), use Import Key.\n",
                     id="info"
                 )
             with Horizontal(id="buttons"):
@@ -47,6 +48,7 @@ class AddEditScreen(Screen):
                     yield Button("Open Edit Wizard", variant="primary", id="btn-go")
                 else:
                     yield Button("Open Add Wizard", variant="primary", id="btn-go")
+                    yield Button("Import Key File", variant="success", id="btn-import")
                 yield Button("Cancel", variant="default", id="btn-cancel")
         yield Footer()
 
@@ -54,7 +56,11 @@ class AddEditScreen(Screen):
         if event.button.id == "btn-go":
             args = ["edit", self._alias] if self._alias else ["add"]
             with self.app.suspend():
-                subprocess.run([OKSSH_BIN, *args])
+                subprocess.run([OKSSH_BIN, *args], env=_CLI_ENV)
+            self.dismiss(True)
+        elif event.button.id == "btn-import":
+            with self.app.suspend():
+                subprocess.run([OKSSH_BIN, "import-key"], env=_CLI_ENV)
             self.dismiss(True)
         elif event.button.id == "btn-cancel":
             self.dismiss(False)

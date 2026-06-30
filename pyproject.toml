@@ -9,7 +9,7 @@ description = "Textual TUI frontend for okssh"
 requires-python = ">=3.11"
 dependencies = [
     "textual>=0.89.0",
-    "paramiko>=3.0",
+    "asyncssh>=2.14",
 ]
 
 [project.scripts]

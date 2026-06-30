@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import shutil
 import stat as stat_mod
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,23 +61,36 @@ def _list_local(path: Path) -> list[FEntry]:
     return entries
 
 
-def _list_remote(sftp, path: str) -> list[FEntry]:
+async def _list_remote(sftp, path: str) -> list[FEntry]:
     entries: list[FEntry] = []
     try:
-        attrs = sorted(
-            sftp.listdir_attr(path),
-            key=lambda a: (not stat_mod.S_ISDIR(a.st_mode or 0), a.filename.lower()),
+        names = await sftp.readdir(path)
+        names_sorted = sorted(
+            [n for n in names if n.filename not in (".", "..")],
+            key=lambda n: (not stat_mod.S_ISDIR(n.attrs.permissions or 0), n.filename.lower()),
         )
-        for a in attrs:
+        for n in names_sorted:
             entries.append(FEntry(
-                name=a.filename,
-                is_dir=stat_mod.S_ISDIR(a.st_mode or 0),
-                size=a.st_size or 0,
-                mtime=float(a.st_mtime or 0),
+                name=n.filename,
+                is_dir=stat_mod.S_ISDIR(n.attrs.permissions or 0),
+                size=n.attrs.size or 0,
+                mtime=float(n.attrs.mtime or 0),
             ))
     except Exception:
         pass
     return entries
+
+
+async def _rmtree_remote(sftp, path: str) -> None:
+    for n in await sftp.readdir(path):
+        if n.filename in (".", ".."):
+            continue
+        child = path.rstrip("/") + "/" + n.filename
+        if stat_mod.S_ISDIR(n.attrs.permissions or 0):
+            await _rmtree_remote(sftp, child)
+        else:
+            await sftp.remove(child)
+    await sftp.rmdir(path)
 
 
 # ── file pane widget ───────────────────────────────────────────────────────────
@@ -173,7 +187,7 @@ class SftpScreen(Screen):
     def __init__(self, alias: Alias) -> None:
         super().__init__()
         self._alias = alias
-        self._ssh = None
+        self._conn = None
         self._sftp = None
         self._local_path = Path.home()
         self._remote_path = "."
@@ -199,7 +213,6 @@ class SftpScreen(Screen):
         self._refresh_local()
         self.query_one("#local-pane", FilePane).set_active(True)
         self.query_one("#local-pane", FilePane).query_one(DataTable).focus()
-        # show connecting status in remote pane path bar
         self.query_one("#remote-pane", FilePane).query_one("#fp-path", Static).update(
             f"[dim]Remote[/dim]  [#565f89]{self._alias.user or 'default'}@{self._alias.hostname}[/#565f89]"
             f"  [dim]connecting…[/dim]"
@@ -215,50 +228,38 @@ class SftpScreen(Screen):
 
     # ── remote connection ──────────────────────────────────────────────────────
 
-    @work(thread=True)
-    def _connect(self) -> None:
-        import paramiko
+    @work
+    async def _connect(self) -> None:
+        import asyncssh
         try:
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             kwargs: dict = dict(
-                hostname=self._alias.hostname,
+                host=self._alias.hostname,
                 port=int(self._alias.port or 22),
                 username=self._alias.user or None,
-                timeout=15,
-                look_for_keys=True,
-                allow_agent=True,
+                connect_timeout=15,
+                known_hosts=None,
             )
             key = self._alias.identity_file
             if key:
-                kwargs["key_filename"] = str(Path(key).expanduser())
-            ssh.connect(**kwargs)
-            sftp = ssh.open_sftp()
-            self._ssh = ssh
-            self._sftp = sftp
-            self.app.call_from_thread(self._on_connected)
+                kwargs["client_keys"] = [str(Path(key).expanduser())]
+            self._conn = await asyncssh.connect(**kwargs)
+            self._sftp = await self._conn.start_sftp_client()
+            try:
+                self._remote_path = await self._sftp.realpath(".")
+            except Exception:
+                self._remote_path = "/"
+            await self._refresh_remote()
         except Exception as exc:
-            self.app.call_from_thread(self._on_connect_error, str(exc))
+            self.query_one("#remote-pane", FilePane).query_one("#fp-path", Static).update(
+                f"[dim]Remote[/dim]  [#f7768e]✗ {exc}[/#f7768e]"
+            )
+            self.notify(f"SFTP connection failed: {exc}", severity="error")
 
-    def _on_connected(self) -> None:
-        try:
-            self._remote_path = self._sftp.normalize(".")
-        except Exception:
-            self._remote_path = "/"
-        self._refresh_remote()
-
-    def _on_connect_error(self, msg: str) -> None:
-        self.query_one("#remote-pane", FilePane).query_one("#fp-path", Static).update(
-            f"[dim]Remote[/dim]  [#f7768e]✗ {msg}[/#f7768e]"
-        )
-        self.notify(f"SFTP connection failed: {msg}", severity="error")
-
-    def _refresh_remote(self) -> None:
+    async def _refresh_remote(self) -> None:
         if self._sftp is None:
             return
-        self.query_one("#remote-pane", FilePane).populate(
-            self._remote_path, _list_remote(self._sftp, self._remote_path)
-        )
+        entries = await _list_remote(self._sftp, self._remote_path)
+        self.query_one("#remote-pane", FilePane).populate(self._remote_path, entries)
 
     # ── navigation ─────────────────────────────────────────────────────────────
 
@@ -269,17 +270,10 @@ class SftpScreen(Screen):
         self.query_one(f"#{self._active}-pane", FilePane).query_one(DataTable).focus()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        # Determine which pane fired the event and make it active
         local_table = self.query_one("#local-pane", FilePane).query_one(DataTable)
         self._active = "local" if event.control is local_table else "remote"
         self.query_one("#local-pane", FilePane).set_active(self._active == "local")
         self.query_one("#remote-pane", FilePane).set_active(self._active == "remote")
-        self._action_activate()
-
-    def _active_pane(self) -> FilePane:
-        return self.query_one(f"#{self._active}-pane", FilePane)
-
-    def _action_activate(self) -> None:
         entry = self._active_pane().selected_entry()
         if entry is None or not entry.is_dir:
             return
@@ -290,24 +284,34 @@ class SftpScreen(Screen):
             )
             self._refresh_local()
         else:
-            if self._sftp is None:
-                return
-            new = (
-                str(Path(self._remote_path).parent)
-                if entry.name == ".."
-                else self._remote_path.rstrip("/") + "/" + entry.name
-            )
-            try:
-                self._sftp.chdir(new)
-                self._remote_path = self._sftp.normalize(".")
-            except Exception as exc:
-                self.notify(f"Cannot navigate: {exc}", severity="error")
-                return
-            self._refresh_remote()
+            self._navigate_remote(entry.name)
+
+    def _active_pane(self) -> FilePane:
+        return self.query_one(f"#{self._active}-pane", FilePane)
+
+    @work
+    async def _navigate_remote(self, name: str) -> None:
+        if self._sftp is None:
+            return
+        new = (
+            str(Path(self._remote_path).parent)
+            if name == ".."
+            else self._remote_path.rstrip("/") + "/" + name
+        )
+        try:
+            self._remote_path = await self._sftp.realpath(new)
+        except Exception as exc:
+            self.notify(f"Cannot navigate: {exc}", severity="error")
+            return
+        await self._refresh_remote()
 
     def action_refresh_panes(self) -> None:
         self._refresh_local()
-        self._refresh_remote()
+        self._do_refresh_remote()
+
+    @work
+    async def _do_refresh_remote(self) -> None:
+        await self._refresh_remote()
 
     # ── copy ───────────────────────────────────────────────────────────────────
 
@@ -318,30 +322,28 @@ class SftpScreen(Screen):
         entry = self._active_pane().selected_entry()
         if entry is None or entry.name == "..":
             return
-        if entry.is_dir:
-            self.notify("Directory copy not supported — select a file", severity="warning")
-            return
         if self._active == "local":
             src = str(self._local_path / entry.name)
-            dst = self._remote_path.rstrip("/") + "/" + entry.name
-            self._copy_worker(src, dst, "upload", entry.name)
+            # for dirs, dst is the remote parent so asyncssh places dirname/ inside it
+            dst = self._remote_path if entry.is_dir else self._remote_path.rstrip("/") + "/" + entry.name
+            self._copy_worker(src, dst, "upload", entry.name, entry.is_dir)
         else:
             src = self._remote_path.rstrip("/") + "/" + entry.name
-            dst = str(self._local_path / entry.name)
-            self._copy_worker(src, dst, "download", entry.name)
+            dst = str(self._local_path) if entry.is_dir else str(self._local_path / entry.name)
+            self._copy_worker(src, dst, "download", entry.name, entry.is_dir)
 
-    @work(thread=True)
-    def _copy_worker(self, src: str, dst: str, direction: str, name: str) -> None:
+    @work
+    async def _copy_worker(self, src: str, dst: str, direction: str, name: str, is_dir: bool) -> None:
         try:
             if direction == "upload":
-                self._sftp.put(src, dst)
-                self.app.call_from_thread(self._refresh_remote)
+                await self._sftp.put(src, dst, recurse=is_dir)
+                await self._refresh_remote()
             else:
-                self._sftp.get(src, dst)
-                self.app.call_from_thread(self._refresh_local)
-            self.app.call_from_thread(self.notify, f"[#9ece6a]Copied {name}[/#9ece6a]")
+                await self._sftp.get(src, dst, recurse=is_dir)
+                self._refresh_local()
+            self.notify(f"[#9ece6a]Copied {name}[/#9ece6a]")
         except Exception as exc:
-            self.app.call_from_thread(self.notify, f"Copy failed: {exc}", severity="error")
+            self.notify(f"Copy failed: {exc}", severity="error")
 
     # ── delete ─────────────────────────────────────────────────────────────────
 
@@ -350,31 +352,32 @@ class SftpScreen(Screen):
             self.notify("Not connected", severity="warning")
             return
         entry = self._active_pane().selected_entry()
-        if entry is None or entry.name == ".." or entry.is_dir:
-            self.notify("Select a file to delete", severity="warning")
+        if entry is None or entry.name == "..":
+            self.notify("Select a file or directory to delete", severity="warning")
             return
-        self._delete_worker(entry.name)
+        self._delete_worker(entry.name, entry.is_dir)
 
-    @work(thread=True)
-    def _delete_worker(self, name: str) -> None:
+    @work
+    async def _delete_worker(self, name: str, is_dir: bool) -> None:
         try:
             if self._active == "local":
-                (self._local_path / name).unlink()
-                self.app.call_from_thread(self._refresh_local)
+                target = self._local_path / name
+                shutil.rmtree(target) if is_dir else target.unlink()
+                self._refresh_local()
             else:
-                self._sftp.remove(self._remote_path.rstrip("/") + "/" + name)
-                self.app.call_from_thread(self._refresh_remote)
-            self.app.call_from_thread(self.notify, f"Deleted {name}")
+                path = self._remote_path.rstrip("/") + "/" + name
+                await (_rmtree_remote(self._sftp, path) if is_dir else self._sftp.remove(path))
+                await self._refresh_remote()
+            self.notify(f"Deleted {name}")
         except Exception as exc:
-            self.app.call_from_thread(self.notify, f"Delete failed: {exc}", severity="error")
+            self.notify(f"Delete failed: {exc}", severity="error")
 
     # ── close ──────────────────────────────────────────────────────────────────
 
     def action_dismiss_screen(self) -> None:
-        for obj in (self._sftp, self._ssh):
-            if obj:
-                try:
-                    obj.close()
-                except Exception:
-                    pass
+        if self._conn:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
         self.dismiss()

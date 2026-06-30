@@ -104,13 +104,6 @@ DetailPanel {
 
 /* ── Tunnels screen ──────────────────────────────────────────────────────── */
 
-#tunnel-help {
-    padding: 0 1;
-    height: 2;
-    color: #565f89;
-    background: #1a1b26;
-}
-
 #tunnel-table {
     height: 1fr;
     border: round #2a2b3d;
@@ -119,7 +112,6 @@ DetailPanel {
 /* ── Snippets screen ─────────────────────────────────────────────────────── */
 
 #snip-header {
-    height: 2;
     padding: 0 1;
     background: #1a1b26;
 }
@@ -144,7 +136,6 @@ DetailPanel {
 /* ── Log screen ──────────────────────────────────────────────────────────── */
 
 #log-header {
-    height: 2;
     padding: 0 1;
     background: #1a1b26;
     color: #565f89;
@@ -223,13 +214,6 @@ Button.-error:hover {
 }
 
 /* ── Agent / Backup screens ──────────────────────────────────────────────── */
-
-#agent-help, #backup-help {
-    padding: 0 1;
-    height: 2;
-    color: #565f89;
-    background: #1a1b26;
-}
 
 #agent-table, #backup-table {
     height: 1fr;
