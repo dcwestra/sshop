@@ -226,3 +226,41 @@ def bootstrap_remove(alias: str) -> tuple[int, str]:
 def bootstrap_list() -> tuple[int, str]:
     code, out, err = run(["bootstrap", "list"])
     return code, out + err
+
+
+def tunnel_add() -> None:
+    """Interactive tunnel wizard — blocks, call inside app.suspend()."""
+    subprocess.run([OKSSH_BIN, "tunnel", "add"], env=_CLI_ENV)
+
+
+def snip_add() -> None:
+    """Interactive snippet add wizard — blocks, call inside app.suspend()."""
+    subprocess.run([OKSSH_BIN, "snip", "add"], env=_CLI_ENV)
+
+
+def snip_edit(name: str) -> None:
+    """Interactive snippet edit wizard — blocks, call inside app.suspend()."""
+    subprocess.run([OKSSH_BIN, "snip", "edit", name], env=_CLI_ENV)
+
+
+def snip_delete(name: str) -> tuple[int, str]:
+    code, out, err = run(["snip", "rm", name], input_text="y\n")
+    return code, err or out
+
+
+def snip_run_targets(name: str, targets: list[str], parallel: bool = False) -> None:
+    """Run a snippet on specific hosts — interactive, call inside app.suspend()."""
+    args = [OKSSH_BIN, "snip", "run", name] + targets
+    if parallel:
+        args.append("--parallel")
+    subprocess.run(args, env=_CLI_ENV)
+
+
+def snip_push(targets: list[str]) -> None:
+    """Push snippets to bootstrapped hosts — interactive, call inside app.suspend()."""
+    subprocess.run([OKSSH_BIN, "snip", "push"] + targets, env=_CLI_ENV)
+
+
+def snip_run_group(name: str, group: str) -> None:
+    """Run a snippet on all aliases in a group — interactive, call inside app.suspend()."""
+    subprocess.run([OKSSH_BIN, "snip", "run", name, "--group", group], env=_CLI_ENV)

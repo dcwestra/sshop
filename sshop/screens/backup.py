@@ -3,9 +3,9 @@ from __future__ import annotations
 import re
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.screen import Screen
-from textual.widgets import DataTable, Static
-from textual.containers import Vertical
+from textual.screen import Screen, ModalScreen
+from textual.widgets import Button, DataTable, Label, Static
+from textual.containers import Grid, Vertical
 
 from sshop import engine
 from sshop.config import load_aliases, load_tunnels, load_snippets
@@ -15,7 +15,7 @@ from sshop.widgets.keybar import KeyBar
 
 class BackupScreen(Screen):
     BINDINGS = [
-        Binding("enter,r", "restore", "Restore"),
+        Binding("r", "restore", "Restore"),
         Binding("escape,q", "dismiss", "Back"),
     ]
 
@@ -73,11 +73,63 @@ class BackupScreen(Screen):
             return self._backups[idx]
         return None
 
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        self.action_restore()
+
     def action_restore(self) -> None:
         n = self._focused_n()
         if n:
+            self.app.push_screen(
+                ConfirmRestore(n),
+                callback=lambda confirmed: self._on_restore_confirmed(confirmed, n),
+            )
+
+    def _on_restore_confirmed(self, confirmed: bool, n: str) -> None:
+        if confirmed:
             code, msg = engine.backup_restore(int(n))
             self.notify(
                 msg.strip() or f"Restored backup #{n}",
                 severity="information" if code == 0 else "error",
             )
+
+
+class ConfirmRestore(ModalScreen[bool]):
+
+    DEFAULT_CSS = """
+    ConfirmRestore {
+        align: center middle;
+    }
+    ConfirmRestore > Grid {
+        grid-size: 2;
+        grid-gutter: 1 2;
+        grid-rows: 1fr 3;
+        padding: 1 2;
+        width: 54;
+        height: 10;
+        border: solid $warning;
+        background: $surface;
+    }
+    ConfirmRestore Label {
+        column-span: 2;
+        height: 1fr;
+        width: 1fr;
+        content-align: center middle;
+    }
+    ConfirmRestore Button { width: 100%; }
+    """
+
+    def __init__(self, backup_n: str):
+        super().__init__()
+        self._backup_n = backup_n
+
+    def compose(self) -> ComposeResult:
+        with Grid():
+            yield Label(
+                f"Restore backup [bold]#{self._backup_n}[/bold]?\n"
+                f"[dim]This will overwrite your current ~/.ssh/config[/dim]"
+            )
+            yield Button("Restore", variant="warning", id="btn-yes")
+            yield Button("Cancel", variant="default", id="btn-no")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "btn-yes")

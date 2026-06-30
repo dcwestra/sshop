@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import ModalScreen, Screen
@@ -12,7 +11,6 @@ from sshop.config import Snippet, load_aliases, load_bootstrapped_aliases, load_
 from sshop.widgets.stats_header import StatsHeader
 from sshop.widgets.keybar import KeyBar
 
-OKSSH_BIN = engine.OKSSH_BIN
 
 
 class _RunOnModal(ModalScreen[list[str] | None]):
@@ -274,11 +272,8 @@ class SnippetsScreen(Screen):
     def _on_run_targets(self, snip_name: str, targets: list[str] | None) -> None:
         if not targets:
             return
-        cmd = [OKSSH_BIN, "snip", "run", snip_name] + targets
-        if len(targets) > 1:
-            cmd.append("--parallel")
         with self.app.suspend():
-            subprocess.run(cmd)
+            engine.snip_run_targets(snip_name, targets, parallel=len(targets) > 1)
 
     def action_push_snippets(self) -> None:
         hosts = load_bootstrapped_aliases()
@@ -294,13 +289,13 @@ class SnippetsScreen(Screen):
         if not targets:
             return
         with self.app.suspend():
-            subprocess.run([OKSSH_BIN, "snip", "push"] + targets)
+            engine.snip_push(targets)
 
     def action_edit_snippet(self) -> None:
         s = self._focused_snippet()
         if s:
             with self.app.suspend():
-                subprocess.run([OKSSH_BIN, "snip", "edit", s.name])
+                engine.snip_edit(s.name)
             self._load()
 
     def action_run_group(self) -> None:
@@ -320,16 +315,19 @@ class SnippetsScreen(Screen):
     def _on_run_group(self, snip_name: str, group: str | None) -> None:
         if group:
             with self.app.suspend():
-                subprocess.run([OKSSH_BIN, "snip", "run", snip_name, "--group", group])
+                engine.snip_run_group(snip_name, group)
 
     def action_add(self) -> None:
         with self.app.suspend():
-            subprocess.run([OKSSH_BIN, "snip", "add"])
+            engine.snip_add()
         self._load()
 
     def action_delete(self) -> None:
         s = self._focused_snippet()
         if s:
-            with self.app.suspend():
-                subprocess.run([OKSSH_BIN, "snip", "rm", s.name])
+            code, msg = engine.snip_delete(s.name)
+            if code == 0:
+                self.notify(f"Deleted snippet '{s.name}'")
+            else:
+                self.notify(f"Error: {msg}", severity="error")
             self._load()

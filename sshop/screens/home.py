@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen, ModalScreen
@@ -217,6 +218,8 @@ class HomeScreen(Screen):
         Binding("q", "quit", "Quit"),
     ]
 
+    _DOUBLE_CLICK_S = 0.45
+
     def __init__(self):
         super().__init__()
         self._aliases: list[Alias] = []
@@ -224,6 +227,9 @@ class HomeScreen(Screen):
         self._sort_reverse: bool = False
         self._audit_threshold: int = 90
         self._show_hidden: bool = False
+        self._mouse_pending: bool = False
+        self._last_click_row: int = -1
+        self._last_click_time: float = 0.0
 
     def compose(self) -> ComposeResult:
         yield StatsHeader(id="stats-header")
@@ -335,8 +341,24 @@ class HomeScreen(Screen):
             self._sort_reverse = False
         self._load_aliases()
 
+    def on_mouse_down(self, event) -> None:
+        self._mouse_pending = True
+
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        self.action_connect()
+        """Enter connects immediately; single mouse click requires a second click."""
+        if not self._mouse_pending:
+            # Keyboard Enter — always connect
+            self.action_connect()
+            return
+        self._mouse_pending = False
+        now = time.monotonic()
+        row = event.cursor_row
+        if row == self._last_click_row and (now - self._last_click_time) < self._DOUBLE_CLICK_S:
+            self._last_click_row = -1
+            self.action_connect()
+        else:
+            self._last_click_row = row
+            self._last_click_time = now
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         table = self.query_one("#alias-table", DataTable)
@@ -429,14 +451,17 @@ class HomeScreen(Screen):
     def action_delete(self) -> None:
         alias = self._focused_alias()
         if alias:
-            self.app.push_screen(ConfirmDelete(alias.name), callback=self._on_delete_confirmed)
+            name = alias.name
+            self.app.push_screen(
+                ConfirmDelete(name),
+                callback=lambda confirmed: self._on_delete_confirmed(confirmed, name),
+            )
 
-    def _on_delete_confirmed(self, confirmed: bool) -> None:
-        alias = self._focused_alias()
-        if confirmed and alias:
-            code, msg = engine.remove_alias(alias.name)
+    def _on_delete_confirmed(self, confirmed: bool, name: str) -> None:
+        if confirmed:
+            code, msg = engine.remove_alias(name)
             if code == 0:
-                self.notify(f"Deleted {alias.name}")
+                self.notify(f"Deleted {name}")
                 self._load_aliases()
             else:
                 self.notify(f"Error: {msg}", severity="error")

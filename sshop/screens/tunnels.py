@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
@@ -11,8 +10,6 @@ from sshop import engine
 from sshop.config import Tunnel, load_aliases, load_tunnels, load_snippets
 from sshop.widgets.stats_header import StatsHeader
 from sshop.widgets.keybar import KeyBar
-
-OKSSH_BIN = engine.OKSSH_BIN
 
 _TYPE_COLOR = {
     "local":  "#7dcfff",
@@ -94,7 +91,7 @@ class TunnelsScreen(Screen):
 
     def action_add(self) -> None:
         with self.app.suspend():
-            subprocess.run([OKSSH_BIN, "tunnel", "add"])
+            engine.tunnel_add()
         self._load()
 
     def action_delete(self) -> None:
