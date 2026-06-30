@@ -59,9 +59,8 @@ class AddEditScreen(Screen):
                 subprocess.run([OKSSH_BIN, *args], env=_CLI_ENV)
             self.dismiss(True)
         elif event.button.id == "btn-import":
-            with self.app.suspend():
-                subprocess.run([OKSSH_BIN, "import-key"], env=_CLI_ENV)
-            self.dismiss(True)
+            from sshop.screens.import_key import ImportKeyScreen
+            self.app.push_screen(ImportKeyScreen(), callback=lambda _: self.dismiss(True))
         elif event.button.id == "btn-cancel":
             self.dismiss(False)
 

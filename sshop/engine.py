@@ -228,6 +228,22 @@ def bootstrap_list() -> tuple[int, str]:
     return code, out + err
 
 
+def import_key(
+    alias: str,
+    key_file: str,
+    host: str,
+    user: str,
+    port: int = 22,
+    note: str = "",
+    group: str = "",
+    jump: str = "",
+) -> tuple[int, str]:
+    """Register an existing private key non-interactively."""
+    args = ["import-key", alias, key_file, host, user, str(port), note, group, jump]
+    code, out, err = run(args)
+    return code, err or out
+
+
 def tunnel_add() -> None:
     """Interactive tunnel wizard — blocks, call inside app.suspend()."""
     subprocess.run([OKSSH_BIN, "tunnel", "add"], env=_CLI_ENV)
