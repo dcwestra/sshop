@@ -50,10 +50,13 @@ class AgentScreen(Screen):
         self._aliases = [a.name for a in load_aliases()]
         _, raw = engine.agent_list()
 
+        # okssh agent list prints one row per alias: "  <alias>  yes|no  <keyfile>"
+        # Match per-line first column so "web" doesn't light up for "web2".
         loaded: set[str] = set()
-        for alias in self._aliases:
-            if alias in raw:
-                loaded.add(alias)
+        for line in raw.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] in self._aliases and parts[1] == "yes":
+                loaded.add(parts[0])
 
         table = self.query_one("#agent-table", DataTable)
         table.clear()

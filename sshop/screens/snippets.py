@@ -216,7 +216,7 @@ class SnippetsScreen(Screen):
             f"  [dim]alias:[/dim] [#7dcfff]{alias_label}[/#7dcfff]"
         )
         table = self.query_one("#snip-table", DataTable)
-        table.add_columns("NAME", "GROUP", "DESCRIPTION")
+        table.add_columns("NAME", "SUDO", "DESCRIPTION")
         self._load()
 
     def _load(self) -> None:
@@ -226,7 +226,7 @@ class SnippetsScreen(Screen):
         for s in self._snippets:
             table.add_row(
                 f"[bold]{s.name}[/bold]",
-                f"[#7dcfff]{s.group}[/#7dcfff]" if s.group else "[dim]—[/dim]",
+                "[#e0af68]sudo[/#e0af68]" if s.use_sudo == "yes" else "[dim]—[/dim]",
                 s.description or "[dim]—[/dim]",
                 key=s.name,
             )
@@ -246,10 +246,9 @@ class SnippetsScreen(Screen):
             detail.update("")
             return
         rule = "[#2a2b3d]" + "─" * 26 + "[/#2a2b3d]"
-        sudo_note = "  [#e0af68]requires sudo[/#e0af68]\n" if s.use_sudo == "1" else ""
+        sudo_note = "  [#e0af68]requires sudo[/#e0af68]\n" if s.use_sudo == "yes" else ""
         detail.update(
             f"[bold #ff9e64]{s.name}[/bold #ff9e64]\n\n"
-            f"  [dim]group[/dim]  {f'[#7dcfff]{s.group}[/#7dcfff]' if s.group else '[dim]—[/dim]'}\n"
             f"  [dim] desc[/dim]  {s.description or '[dim]—[/dim]'}\n"
             f"{sudo_note}\n"
             f"{rule}\n"
@@ -324,10 +323,20 @@ class SnippetsScreen(Screen):
 
     def action_delete(self) -> None:
         s = self._focused_snippet()
-        if s:
-            code, msg = engine.snip_delete(s.name)
-            if code == 0:
-                self.notify(f"Deleted snippet '{s.name}'")
-            else:
-                self.notify(f"Error: {msg}", severity="error")
-            self._load()
+        if not s:
+            return
+        from sshop.modals import ConfirmModal
+        self.app.push_screen(
+            ConfirmModal(f"Delete snippet [bold]{s.name}[/bold]?", confirm_label="Delete"),
+            callback=lambda ok: self._on_delete_confirmed(ok, s.name),
+        )
+
+    def _on_delete_confirmed(self, confirmed: bool, name: str) -> None:
+        if not confirmed:
+            return
+        code, msg = engine.snip_delete(name)
+        if code == 0:
+            self.notify(f"Deleted snippet '{name}'")
+        else:
+            self.notify(f"Error: {msg}", severity="error")
+        self._load()

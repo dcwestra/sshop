@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import time
+from pathlib import Path
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen, ModalScreen
@@ -22,6 +23,7 @@ _HELP_TEXT = """\
   [cyan]P[/cyan]      Connect with ephemeral profile
   [cyan]e[/cyan]      Edit alias
   [cyan]a[/cyan]      Add new alias
+  [cyan]I[/cyan]      Import an existing key
   [cyan]D[/cyan]      Delete alias
   [cyan]f[/cyan]      Open SFTP session
   [cyan]w[/cyan]      Send Wake-on-LAN
@@ -140,8 +142,9 @@ class DetailPanel(Static):
 
         # key path shortened for display
         key_display = alias.identity_file
-        if key_display.startswith(str(__import__("pathlib").Path.home())):
-            key_display = "~" + key_display[len(str(__import__("pathlib").Path.home())):]
+        home = str(Path.home())
+        if key_display.startswith(home):
+            key_display = "~" + key_display[len(home):]
 
         group_str = (f"[{color}]◆ {alias.group}[/{color}]"
                      if alias.group else "[dim]—[/dim]")
@@ -220,15 +223,15 @@ class HomeScreen(Screen):
     ]
 
     _DOUBLE_CLICK_S = 0.45
+    _MOUSE_SELECT_WINDOW_S = 0.3
 
     def __init__(self):
         super().__init__()
         self._aliases: list[Alias] = []
         self._sort_col: str | None = None
         self._sort_reverse: bool = False
-        self._audit_threshold: int = 90
         self._show_hidden: bool = False
-        self._mouse_pending: bool = False
+        self._last_mouse_down: float = 0.0
         self._last_click_row: int = -1
         self._last_click_time: float = 0.0
 
@@ -241,7 +244,6 @@ class HomeScreen(Screen):
         yield KeyBar()
 
     def on_mount(self) -> None:
-        self._audit_threshold = load_audit_threshold()
         self._startup_audit_check()
         table = self.query_one("#alias-table", DataTable)
         col_specs = [
@@ -279,6 +281,12 @@ class HomeScreen(Screen):
 
     def _load_aliases(self) -> None:
         raw = load_aliases(show_hidden=self._show_hidden)
+        # carry over probe results — reloading from disk must not blank the PING column
+        probed = {a.name: (a.reachable, a.latency_ms) for a in self._aliases
+                  if a.reachable is not None}
+        for a in raw:
+            if a.name in probed:
+                a.reachable, a.latency_ms = probed[a.name]
         self._aliases = self._sorted_aliases(raw)
         table = self.query_one("#alias-table", DataTable)
         table.clear()
@@ -343,16 +351,15 @@ class HomeScreen(Screen):
         self._load_aliases()
 
     def on_mouse_down(self, event) -> None:
-        self._mouse_pending = True
+        self._last_mouse_down = time.monotonic()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """Enter connects immediately; single mouse click requires a second click."""
-        if not self._mouse_pending:
+        now = time.monotonic()
+        if (now - self._last_mouse_down) > self._MOUSE_SELECT_WINDOW_S:
             # Keyboard Enter — always connect
             self.action_connect()
             return
-        self._mouse_pending = False
-        now = time.monotonic()
         row = event.cursor_row
         if row == self._last_click_row and (now - self._last_click_time) < self._DOUBLE_CLICK_S:
             self._last_click_row = -1
@@ -523,12 +530,10 @@ class HomeScreen(Screen):
             if val in ("off", "never", "disable"):
                 engine.run(["prefer", "audit_threshold", "off"])
                 self.notify("Key rotation auditing disabled.", severity="warning")
-                self._audit_threshold = None
                 self._load_aliases()
             elif val.isdigit() and int(val) > 0:
                 engine.run(["prefer", "audit_threshold", val])
                 self.notify(f"Rotation threshold set to {val} days.", severity="information")
-                self._audit_threshold = int(val)
                 self._load_aliases()
 
         self.app.push_screen(AuditOutputModal(out or "No issues found."), _after_audit)
@@ -605,6 +610,7 @@ class HomeScreen(Screen):
 
     def action_refresh(self) -> None:
         self._load_aliases()
+        self.run_status_probes()
         self.notify("Refreshed")
 
     def action_quit(self) -> None:
@@ -630,7 +636,14 @@ class HomeScreen(Screen):
         import asyncio
         table = self.query_one("#alias-table", DataTable)
         probed = [a for a in self._aliases if a.hostname]
-        tasks = [engine.probe_alias(a.hostname, int(a.port or 22)) for a in probed]
+
+        def _port(a: Alias) -> int:
+            try:
+                return int(a.port)
+            except (TypeError, ValueError):
+                return 22
+
+        tasks = [engine.probe_alias(a.hostname, _port(a)) for a in probed]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         ping_col_key = self._col_keys.get("PING")
         for alias, result in zip(probed, results):

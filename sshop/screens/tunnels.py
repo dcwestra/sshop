@@ -7,7 +7,7 @@ from textual.widgets import DataTable, Static
 from textual.containers import Vertical
 
 from sshop import engine
-from sshop.config import Tunnel, load_aliases, load_tunnels, load_snippets
+from sshop.config import Tunnel, load_aliases, load_tunnels, load_snippets, tunnel_running
 from sshop.widgets.stats_header import StatsHeader
 from sshop.widgets.keybar import KeyBar
 
@@ -50,7 +50,7 @@ class TunnelsScreen(Screen):
         except Exception:
             pass
         table = self.query_one("#tunnel-table", DataTable)
-        table.add_columns("NAME", "ALIAS", "TYPE", "FORWARD SPEC", "AUTO")
+        table.add_columns("NAME", "STATUS", "ALIAS", "TYPE", "FORWARD SPEC")
         self._load()
 
     def _load(self) -> None:
@@ -59,12 +59,14 @@ class TunnelsScreen(Screen):
         table.clear()
         for t in self._tunnels:
             color = _TYPE_COLOR.get(t.tunnel_type, "#c0caf5")
+            status = ("[#9ece6a]● running[/#9ece6a]" if tunnel_running(t.name)
+                      else "[dim]○ stopped[/dim]")
             table.add_row(
                 f"[bold]{t.name}[/bold]",
+                status,
                 f"[#7dcfff]{t.alias}[/#7dcfff]",
                 f"[{color}]{t.tunnel_type}[/{color}]",
                 t.forward_spec,
-                "[#9ece6a]✓[/#9ece6a]" if t.auto_start == "1" else "[dim]—[/dim]",
                 key=t.name,
             )
 
@@ -81,6 +83,7 @@ class TunnelsScreen(Screen):
             code, msg = engine.tunnel_start(t.name)
             self.notify(msg.strip() or f"Started {t.name}",
                         severity="information" if code == 0 else "error")
+            self._load()
 
     def action_stop(self) -> None:
         t = self._focused_tunnel()
@@ -88,6 +91,7 @@ class TunnelsScreen(Screen):
             code, msg = engine.tunnel_stop(t.name)
             self.notify(msg.strip() or f"Stopped {t.name}",
                         severity="information" if code == 0 else "error")
+            self._load()
 
     def action_add(self) -> None:
         with self.app.suspend():

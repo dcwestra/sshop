@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import configparser
-import os
 import re
 import time
 from dataclasses import dataclass
@@ -48,7 +47,6 @@ class Tunnel:
     alias: str = ""
     forward_spec: str = ""
     tunnel_type: str = "local"   # local / remote / socks
-    auto_start: str = ""
 
 
 @dataclass
@@ -56,7 +54,6 @@ class Snippet:
     name: str
     command: str = ""
     description: str = ""
-    group: str = ""
     use_sudo: str = ""
 
 
@@ -224,16 +221,48 @@ def load_aliases(show_hidden: bool = False) -> list[Alias]:
     return aliases
 
 
+def _parse_named_blocks(path: Path, header: str) -> list[dict[str, str]]:
+    """Parse okssh-style repeated blocks: every block starts with the SAME
+    section header (e.g. [tunnel]) and identifies itself via a name= field.
+    configparser can't handle duplicate section names, so parse by hand."""
+    blocks: list[dict[str, str]] = []
+    if not path.exists():
+        return blocks
+    current: dict[str, str] | None = None
+    with path.open() as fh:
+        for line in fh:
+            line = line.strip()
+            if line == f"[{header}]":
+                if current and current.get("name"):
+                    blocks.append(current)
+                current = {}
+                continue
+            if current is not None and "=" in line and not line.startswith("#"):
+                k, _, v = line.partition("=")
+                current[k.strip()] = v.strip()
+    if current and current.get("name"):
+        blocks.append(current)
+    return blocks
+
+
+TUNNEL_SOCK_DIR = OKSSH_DIR / "tunnel-socks"
+
+
+def tunnel_running(name: str) -> bool:
+    """True if the tunnel's SSH control socket exists (approximation of
+    `okssh tunnel status` without spawning a subprocess per tunnel)."""
+    return (TUNNEL_SOCK_DIR / f"{name}.sock").is_socket()
+
+
 def load_tunnels() -> list[Tunnel]:
-    cp = _parse_ini(TUNNELS_FILE)
     tunnels = []
-    for section in cp.sections():
-        t = Tunnel(name=section)
-        t.alias = cp.get(section, "alias", fallback="")
-        t.forward_spec = cp.get(section, "forward_spec", fallback="")
-        t.tunnel_type = cp.get(section, "type", fallback="local")
-        t.auto_start = cp.get(section, "auto_start", fallback="")
-        tunnels.append(t)
+    for block in _parse_named_blocks(TUNNELS_FILE, "tunnel"):
+        tunnels.append(Tunnel(
+            name=block["name"],
+            alias=block.get("alias", ""),
+            forward_spec=block.get("forward", ""),
+            tunnel_type=block.get("type", "local"),
+        ))
     return tunnels
 
 
@@ -244,7 +273,6 @@ def load_snippets() -> list[Snippet]:
         s = Snippet(name=section)
         s.command = cp.get(section, "command", fallback="")
         s.description = cp.get(section, "description", fallback="")
-        s.group = cp.get(section, "group", fallback="")
         s.use_sudo = cp.get(section, "use_sudo", fallback="")
         snippets.append(s)
     return snippets
@@ -262,17 +290,17 @@ class Template:
 
 
 def load_templates() -> list[Template]:
-    cp = _parse_ini(TEMPLATES_FILE)
     templates = []
-    for section in cp.sections():
-        t = Template(name=section)
-        t.user = cp.get(section, "user", fallback="")
-        t.port = cp.get(section, "port", fallback="")
-        t.group = cp.get(section, "group", fallback="")
-        t.key_type = cp.get(section, "key_type", fallback="")
-        t.note = cp.get(section, "note", fallback="")
-        t.server_alive_interval = cp.get(section, "alive", fallback="")
-        templates.append(t)
+    for block in _parse_named_blocks(TEMPLATES_FILE, "template"):
+        templates.append(Template(
+            name=block["name"],
+            user=block.get("user", ""),
+            port=block.get("port", ""),
+            group=block.get("group", ""),
+            key_type=block.get("key_type", ""),
+            note=block.get("note", ""),
+            server_alive_interval=block.get("alive", ""),
+        ))
     return templates
 
 
@@ -287,13 +315,15 @@ def load_bootstrapped_aliases() -> list[str]:
 
 
 def load_history(alias_filter: str | None = None) -> list[dict[str, str]]:
-    """Returns list of {timestamp, alias, duration, exit_code} dicts."""
+    """Returns list of {timestamp, alias, duration, exit_code} dicts.
+    okssh writes history.log as pipe-separated: timestamp|alias|duration|exit.
+    alias_filter is a case-insensitive substring match."""
     entries = []
     if not HISTORY_LOG.exists():
         return entries
     with HISTORY_LOG.open() as fh:
         for line in fh:
-            parts = line.strip().split("\t")
+            parts = line.strip().split("|")
             if len(parts) < 4:
                 continue
             entry = {
@@ -302,7 +332,7 @@ def load_history(alias_filter: str | None = None) -> list[dict[str, str]]:
                 "duration": parts[2],
                 "exit_code": parts[3],
             }
-            if alias_filter and entry["alias"] != alias_filter:
+            if alias_filter and alias_filter.lower() not in entry["alias"].lower():
                 continue
             entries.append(entry)
     return list(reversed(entries))

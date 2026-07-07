@@ -208,7 +208,7 @@ class ImportKeyScreen(Screen):
         errors = []
         if not key_file:
             errors.append("Key file path is required")
-        elif not Path(key_file.replace("~", str(Path.home()))).exists():
+        elif not Path(key_file).expanduser().exists():
             errors.append(f"Key file not found: {key_file}")
         if not alias:
             errors.append("Alias is required")

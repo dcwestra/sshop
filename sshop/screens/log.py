@@ -17,6 +17,19 @@ def _exit_markup(code: str) -> str:
     return f"[#e0af68]{code}[/#e0af68]"
 
 
+def _duration_str(raw: str) -> str:
+    """history.log stores duration as raw seconds."""
+    try:
+        secs = int(raw)
+    except ValueError:
+        return raw
+    if secs >= 3600:
+        return f"{secs // 3600}h {(secs % 3600) // 60}m"
+    if secs >= 60:
+        return f"{secs // 60}m {secs % 60}s"
+    return f"{secs}s"
+
+
 class LogScreen(Screen):
     BINDINGS = [
         Binding("escape,q", "dismiss", "Back"),
@@ -58,7 +71,7 @@ class LogScreen(Screen):
             table.add_row(
                 f"[dim]{e['timestamp']}[/dim]",
                 f"[bold #7dcfff]{e['alias']}[/bold #7dcfff]",
-                e["duration"],
+                _duration_str(e["duration"]),
                 _exit_markup(e["exit_code"]),
             )
 

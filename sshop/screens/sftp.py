@@ -355,7 +355,15 @@ class SftpScreen(Screen):
         if entry is None or entry.name == "..":
             self.notify("Select a file or directory to delete", severity="warning")
             return
-        self._delete_worker(entry.name, entry.is_dir)
+        from sshop.modals import ConfirmModal
+        kind = "directory (recursive!)" if entry.is_dir else "file"
+        self.app.push_screen(
+            ConfirmModal(
+                f"Delete {self._active} {kind}\n[bold]{entry.name}[/bold]?",
+                confirm_label="Delete",
+            ),
+            callback=lambda ok: self._delete_worker(entry.name, entry.is_dir) if ok else None,
+        )
 
     @work
     async def _delete_worker(self, name: str, is_dir: bool) -> None:

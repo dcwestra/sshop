@@ -223,10 +223,8 @@ class AddAliasScreen(Screen):
         if is_import:
             if not key_file:
                 errors.append("Key file path is required")
-            else:
-                expanded = key_file.replace("~", str(Path.home()), 1)
-                if not Path(expanded).exists():
-                    errors.append(f"Key file not found: {key_file}")
+            elif not Path(key_file).expanduser().exists():
+                errors.append(f"Key file not found: {key_file}")
         else:
             if not password:
                 errors.append("Password is required for ssh-copy-id")
@@ -262,7 +260,8 @@ class AddAliasScreen(Screen):
                 note=note, group=group, jump=jump,
             ),
         )
-        self.app.call_from_thread(self._on_add_done, code, msg, alias)
+        # already back on the event loop after await — call_from_thread would raise here
+        self._on_add_done(code, msg, alias)
 
     def _on_add_done(self, code: int, msg: str, alias: str) -> None:
         btn = self.query_one("#btn-add", Button)

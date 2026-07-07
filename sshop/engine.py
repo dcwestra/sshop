@@ -7,7 +7,6 @@ import os
 import shutil
 import subprocess
 import time
-from pathlib import Path
 
 OKSSH_BIN = shutil.which("okssh") or "/usr/local/bin/okssh"
 
@@ -15,14 +14,19 @@ OKSSH_BIN = shutil.which("okssh") or "/usr/local/bin/okssh"
 _CLI_ENV = {**os.environ, "HAS_WHIPTAIL": "0"}
 
 
-def run(args: list[str], input_text: str | None = None) -> tuple[int, str, str]:
+def run(
+    args: list[str],
+    input_text: str | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[int, str, str]:
     """Run a okssh subcommand synchronously. Returns (returncode, stdout, stderr)."""
+    env = {**_CLI_ENV, **extra_env} if extra_env else _CLI_ENV
     result = subprocess.run(
         [OKSSH_BIN, *args],
         capture_output=True,
         text=True,
         input=input_text,
-        env=_CLI_ENV,
+        env=env,
     )
     return result.returncode, result.stdout, result.stderr
 
@@ -65,7 +69,7 @@ def connect(alias: str) -> None:
     Hand the terminal to okssh connect. Called from within app.suspend() context.
     Blocks until the SSH session ends.
     """
-    subprocess.run([OKSSH_BIN, "connect", alias])
+    subprocess.run([OKSSH_BIN, "connect", alias], env=_CLI_ENV)
 
 
 def remove_alias(alias: str) -> tuple[int, str]:
@@ -94,22 +98,14 @@ def tunnel_remove(name: str) -> tuple[int, str]:
     return code, err or out
 
 
-def snip_run(name: str, alias: str, parallel: bool = False) -> tuple[int, str]:
-    args = ["snip", "run", name, alias]
-    if parallel:
-        args.append("--parallel")
-    code, out, err = run(args)
-    return code, out + err
-
-
 def open_sftp(alias: str) -> None:
     """Open SFTP session — blocks until closed."""
-    subprocess.run([OKSSH_BIN, "open", alias])
+    subprocess.run([OKSSH_BIN, "open", alias], env=_CLI_ENV)
 
 
 def rotate_key(alias: str) -> None:
     """Interactive key rotation — blocks."""
-    subprocess.run([OKSSH_BIN, "rotate", alias])
+    subprocess.run([OKSSH_BIN, "rotate", alias], env=_CLI_ENV)
 
 
 def run_remote(alias: str, cmd: str) -> tuple[int, str]:
@@ -124,7 +120,7 @@ def rename_alias(old: str, new: str) -> tuple[int, str]:
 
 def clone_alias(src: str, dest: str) -> None:
     """Interactive clone wizard — blocks."""
-    subprocess.run([OKSSH_BIN, "clone", src, dest])
+    subprocess.run([OKSSH_BIN, "clone", src, dest], env=_CLI_ENV)
 
 
 def pin_alias(alias: str) -> tuple[int, str]:
@@ -190,16 +186,11 @@ def untag_alias(alias: str, group: str) -> tuple[int, str]:
 
 def connect_with_profile(alias: str) -> None:
     """Connect with ephemeral profile — blocks, call inside app.suspend()."""
-    subprocess.run([OKSSH_BIN, "connect", "--profile", alias])
+    subprocess.run([OKSSH_BIN, "connect", "--profile", alias], env=_CLI_ENV)
 
 
 def diff() -> tuple[int, str]:
     code, out, err = run(["diff"])
-    return code, out + err
-
-
-def template_list() -> tuple[int, str]:
-    code, out, err = run(["template", "list"])
     return code, out + err
 
 
@@ -210,7 +201,7 @@ def template_remove(name: str) -> tuple[int, str]:
 
 def bootstrap_install(alias: str) -> None:
     """Run okssh bootstrap <alias> — interactive, blocks."""
-    subprocess.run([OKSSH_BIN, "bootstrap", alias])
+    subprocess.run([OKSSH_BIN, "bootstrap", alias], env=_CLI_ENV)
 
 
 def bootstrap_update(alias: str) -> tuple[int, str]:
@@ -221,11 +212,6 @@ def bootstrap_update(alias: str) -> tuple[int, str]:
 def bootstrap_remove(alias: str) -> tuple[int, str]:
     code, out, err = run(["bootstrap", "remove", alias])
     return code, err or out
-
-
-def bootstrap_list() -> tuple[int, str]:
-    code, out, err = run(["bootstrap", "list"])
-    return code, out + err
 
 
 def add_alias(
@@ -244,11 +230,16 @@ def add_alias(
 
     Pass key_file to import an existing key (skip keygen + ssh-copy-id).
     Otherwise key_type + password are used to generate a new key.
+
+    The password travels via the OKSSH_PASSWORD env var ("@env" sentinel
+    in argv) so it never shows up in the process list.
     """
     key_spec = f"import:{key_file}" if key_file else key_type
-    args = ["add", alias, host, user, str(port), key_spec, password,
+    extra_env = {"OKSSH_PASSWORD": password} if password else None
+    pass_arg = "@env" if password else ""
+    args = ["add", alias, host, user, str(port), key_spec, pass_arg,
             note, group, jump]
-    code, out, err = run(args)
+    code, out, err = run(args, extra_env=extra_env)
     return code, err or out
 
 

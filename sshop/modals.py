@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-import re
-
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static
 from textual.containers import Grid, Vertical
-
-_ANSI_RE = re.compile(r'\x1b(?:\[[0-9;]*[mKGHFJsun]|[^[[])|[\x00-\x08\x0b-\x1f\x7f]')
 
 
 def _render(content: str) -> Text:
@@ -120,6 +116,50 @@ class ThresholdModal(_InputModal):
             placeholder=cur_str,
             default=cur_str,
         )
+
+
+class ConfirmModal(ModalScreen[bool]):
+    """Generic yes/no confirmation. Returns True if confirmed."""
+
+    DEFAULT_CSS = """
+    ConfirmModal {
+        align: center middle;
+    }
+    ConfirmModal > Grid {
+        grid-size: 2;
+        grid-gutter: 1 2;
+        grid-rows: 1fr 3;
+        padding: 1 2;
+        width: 54;
+        height: 10;
+        border: solid $error;
+        background: $surface;
+    }
+    ConfirmModal Label {
+        column-span: 2;
+        height: 1fr;
+        width: 1fr;
+        content-align: center middle;
+    }
+    ConfirmModal Button { width: 100%; }
+    """
+
+    def __init__(self, message: str, confirm_label: str = "Confirm"):
+        super().__init__()
+        self._message = message
+        self._confirm_label = confirm_label
+
+    def compose(self) -> ComposeResult:
+        with Grid():
+            yield Label(self._message)
+            yield Button(self._confirm_label, variant="error", id="btn-yes")
+            yield Button("Cancel", variant="default", id="btn-no")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "btn-yes")
+
+    def key_escape(self) -> None:
+        self.dismiss(False)
 
 
 class TagModal(ModalScreen):
