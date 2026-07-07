@@ -314,6 +314,20 @@ def load_bootstrapped_aliases() -> list[str]:
     return result
 
 
+def files_snapshot() -> tuple:
+    """Mtime fingerprint of every file sshop displays. Screens poll this to
+    notice changes made outside sshop (okssh CLI, another terminal, sync)."""
+    paths = (SSH_CONFIG, PREFS_FILE, SNIPPETS_FILE, TUNNELS_FILE,
+             TEMPLATES_FILE, HISTORY_LOG)
+    snap = []
+    for p in paths:
+        try:
+            snap.append(p.stat().st_mtime_ns)
+        except OSError:
+            snap.append(0)
+    return tuple(snap)
+
+
 def load_history(alias_filter: str | None = None) -> list[dict[str, str]]:
     """Returns list of {timestamp, alias, duration, exit_code} dicts.
     okssh writes history.log as pipe-separated: timestamp|alias|duration|exit.

@@ -202,3 +202,16 @@ def test_load_snippets(okssh_home):
     assert snippets[0].use_sudo == "yes"
     assert snippets[0].command == "docker compose up -d"
     assert snippets[1].use_sudo == "no"
+
+
+# ── files_snapshot — external-change detection ─────────────────────────────────
+
+def test_files_snapshot_changes_on_write(okssh_home):
+    snap0 = config.files_snapshot()
+    assert snap0 == config.files_snapshot()          # stable when nothing changes
+    (okssh_home / "ssh_config").write_text("Host x\n    HostName 1.2.3.4\n")
+    snap1 = config.files_snapshot()
+    assert snap1 != snap0
+    assert snap1[0] != snap0[0]                       # ssh_config is slot 0
+    (okssh_home / "tunnels").write_text("[tunnel]\nname=t\n")
+    assert config.files_snapshot() != snap1

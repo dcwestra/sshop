@@ -10,7 +10,8 @@ from textual.widgets import Button, Checkbox, DataTable, Input, Label, Static
 from textual.containers import Grid, Horizontal, Vertical
 from textual import work
 
-from sshop.config import Alias, load_aliases, load_audit_threshold, effective_threshold, load_tunnels, load_snippets
+from sshop.config import (Alias, effective_threshold, files_snapshot, load_aliases,
+                          load_audit_threshold, load_snippets, load_tunnels)
 from sshop.widgets.stats_header import StatsHeader
 from sshop.widgets.keybar import KeyBar
 from sshop.worker import run_blocking
@@ -291,6 +292,20 @@ class HomeScreen(Screen):
         # grab initial focus, sending every keystroke into an invisible box
         table.focus()
         self.run_status_probes()
+        # notice changes made outside sshop (okssh CLI, other terminals, sync)
+        self._fs_snapshot = files_snapshot()
+        self.set_interval(2.0, self._check_external_changes)
+
+    def _check_external_changes(self) -> None:
+        snap = files_snapshot()
+        if snap == self._fs_snapshot:
+            return
+        ssh_config_changed = snap[0] != self._fs_snapshot[0]
+        self._fs_snapshot = snap
+        self._load_aliases()
+        if ssh_config_changed:
+            # aliases were added/removed/edited — refresh reachability too
+            self.run_status_probes()
 
     def _sorted_aliases(self, aliases: list[Alias]) -> list[Alias]:
         if self._sort_col is None:
@@ -308,6 +323,8 @@ class HomeScreen(Screen):
         return sorted(aliases, key=sort_key, reverse=self._sort_reverse)
 
     def _load_aliases(self) -> None:
+        cur = self._focused_alias()
+        cur_name = cur.name if cur else None
         raw = load_aliases(show_hidden=self._show_hidden)
         # carry over probe results — reloading from disk must not blank the PING column
         probed = {a.name: (a.reachable, a.latency_ms) for a in self._all_aliases
@@ -347,8 +364,16 @@ class HomeScreen(Screen):
                 key=a.name,
             )
             self._row_keys[a.name] = rk
+        # keep the cursor on the same alias across reloads (background
+        # refresh must not yank it back to the top)
+        if cur_name:
+            for i, a in enumerate(self._aliases):
+                if a.name == cur_name:
+                    table.move_cursor(row=i)
+                    break
         if self._aliases:
-            self.query_one("#detail-panel", DetailPanel).show(self._aliases[0])
+            idx = table.cursor_row if 0 <= table.cursor_row < len(self._aliases) else 0
+            self.query_one("#detail-panel", DetailPanel).show(self._aliases[idx])
         else:
             self.query_one("#detail-panel", DetailPanel).show(None)
 

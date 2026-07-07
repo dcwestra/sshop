@@ -53,9 +53,22 @@ class TunnelsScreen(Screen):
         table = self.query_one("#tunnel-table", DataTable)
         table.add_columns("NAME", "STATUS", "ALIAS", "TYPE", "FORWARD SPEC")
         self._load()
+        # live status: notice tunnels starting/stopping outside this screen
+        self.set_interval(3.0, self._check_changes)
+
+    def _state(self) -> tuple:
+        return tuple((t.name, tunnel_running(t.name)) for t in load_tunnels())
+
+    def _check_changes(self) -> None:
+        state = self._state()
+        if state != getattr(self, "_last_state", None):
+            self._load()
 
     def _load(self) -> None:
+        cur = self._focused_tunnel()
+        cur_name = cur.name if cur else None
         self._tunnels = load_tunnels()
+        self._last_state = tuple((t.name, tunnel_running(t.name)) for t in self._tunnels)
         table = self.query_one("#tunnel-table", DataTable)
         table.clear()
         for t in self._tunnels:
@@ -70,6 +83,11 @@ class TunnelsScreen(Screen):
                 t.forward_spec,
                 key=t.name,
             )
+        if cur_name:
+            for i, t in enumerate(self._tunnels):
+                if t.name == cur_name:
+                    table.move_cursor(row=i)
+                    break
 
     def _focused_tunnel(self) -> Tunnel | None:
         table = self.query_one("#tunnel-table", DataTable)
