@@ -12,6 +12,9 @@ dependencies = [
     "asyncssh>=2.14",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
 [project.scripts]
 sshop = "sshop.app:main"
 
