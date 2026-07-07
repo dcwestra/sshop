@@ -95,7 +95,9 @@ def tunnel_stop(name: str) -> tuple[int, str]:
 
 
 def tunnel_remove(name: str) -> tuple[int, str]:
-    code, out, err = run(["tunnel", "rm", name])
+    # okssh prompts before removing — without piped stdin it would read from
+    # sshop's tty and hang the UI
+    code, out, err = run(["tunnel", "rm", name], input_text="y\n")
     return code, err or out
 
 
@@ -161,7 +163,8 @@ def agent_rm(alias: str) -> tuple[int, str]:
 
 
 def agent_clear() -> tuple[int, str]:
-    code, out, err = run(["agent", "clear"])
+    # okssh prompts before clearing — pipe the confirmation (see tunnel_remove)
+    code, out, err = run(["agent", "clear"], input_text="y\n")
     return code, err or out
 
 

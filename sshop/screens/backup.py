@@ -9,6 +9,7 @@ from textual.containers import Grid, Vertical
 
 from sshop import engine
 from sshop.config import load_aliases, load_tunnels, load_snippets
+from sshop.worker import run_blocking
 from sshop.widgets.stats_header import StatsHeader
 from sshop.widgets.keybar import KeyBar
 
@@ -86,10 +87,13 @@ class BackupScreen(Screen):
 
     def _on_restore_confirmed(self, confirmed: bool, n: str) -> None:
         if confirmed:
-            code, msg = engine.backup_restore(int(n))
-            self.notify(
-                msg.strip() or f"Restored backup #{n}",
-                severity="information" if code == 0 else "error",
+            run_blocking(
+                self,
+                lambda: engine.backup_restore(int(n)),
+                lambda res: self.notify(
+                    res[1].strip() or f"Restored backup #{n}",
+                    severity="information" if res[0] == 0 else "error",
+                ),
             )
 
 

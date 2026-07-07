@@ -10,6 +10,7 @@ from textual.containers import Horizontal, ScrollableContainer, Vertical
 
 from sshop import engine
 from sshop.config import load_aliases, load_tunnels, load_snippets
+from sshop.worker import run_blocking
 from sshop.widgets.stats_header import StatsHeader
 from sshop.widgets.keybar import KeyBar
 
@@ -222,15 +223,23 @@ class ImportKeyScreen(Screen):
 
         port = int(port_s) if port_s.isdigit() else 22
 
-        code, msg = engine.import_key(
-            alias=alias,
-            key_file=key_file,
-            host=host,
-            user=user,
-            port=port,
-            note=note,
-            group=group,
+        btn = self.query_one("#btn-import", Button)
+        btn.disabled = True
+        btn.label = "Importing…"
+        run_blocking(
+            self,
+            lambda: engine.import_key(
+                alias=alias, key_file=key_file, host=host, user=user,
+                port=port, note=note, group=group,
+            ),
+            lambda res: self._on_import_done(res, alias),
         )
+
+    def _on_import_done(self, result: tuple[int, str], alias: str) -> None:
+        btn = self.query_one("#btn-import", Button)
+        btn.disabled = False
+        btn.label = "Import"
+        code, msg = result
         if code == 0:
             self.notify(f"Imported key for [bold]{alias}[/bold]", severity="information")
             self.dismiss(True)

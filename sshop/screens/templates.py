@@ -8,6 +8,7 @@ from textual.containers import Horizontal, Vertical
 
 from sshop import engine
 from sshop.config import Template, load_templates
+from sshop.worker import run_blocking
 from sshop.widgets.stats_header import StatsHeader
 from sshop.widgets.keybar import KeyBar
 
@@ -120,12 +121,17 @@ class TemplatesScreen(Screen):
         t = self._focused_template()
         if not t:
             return
-        code, msg = engine.template_remove(t.name)
-        if code == 0:
-            self.notify(f"Removed template '{t.name}'")
-            self._load()
-        else:
-            self.notify(f"Error: {msg}", severity="error")
+        name = t.name
+
+        def _done(res: tuple[int, str]) -> None:
+            code, msg = res
+            if code == 0:
+                self.notify(f"Removed template '{name}'")
+                self._load()
+            else:
+                self.notify(f"Error: {msg}", severity="error")
+
+        run_blocking(self, lambda: engine.template_remove(name), _done)
 
     def action_refresh(self) -> None:
         self._load()

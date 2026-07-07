@@ -8,6 +8,7 @@ from textual.containers import Vertical
 
 from sshop import engine
 from sshop.config import load_aliases, load_tunnels, load_snippets
+from sshop.worker import run_blocking
 from sshop.widgets.stats_header import StatsHeader
 from sshop.widgets.keybar import KeyBar
 
@@ -71,27 +72,27 @@ class AgentScreen(Screen):
             return self._aliases[idx]
         return None
 
+    def _after(self, result: tuple[int, str], fallback: str) -> None:
+        code, msg = result
+        self.notify(msg.strip() or fallback,
+                    severity="information" if code == 0 else "error")
+        self._load()
+
     def action_add_key(self) -> None:
         alias = self._focused_alias()
         if alias:
-            code, msg = engine.agent_add(alias)
-            self.notify(msg.strip() or f"Added {alias} key to agent",
-                        severity="information" if code == 0 else "error")
-            self._load()
+            run_blocking(self, lambda: engine.agent_add(alias),
+                         lambda res: self._after(res, f"Added {alias} key to agent"))
 
     def action_remove_key(self) -> None:
         alias = self._focused_alias()
         if alias:
-            code, msg = engine.agent_rm(alias)
-            self.notify(msg.strip() or f"Removed {alias} key from agent",
-                        severity="information" if code == 0 else "error")
-            self._load()
+            run_blocking(self, lambda: engine.agent_rm(alias),
+                         lambda res: self._after(res, f"Removed {alias} key from agent"))
 
     def action_clear(self) -> None:
-        code, msg = engine.agent_clear()
-        self.notify(msg.strip() or "Agent cleared",
-                    severity="information" if code == 0 else "error")
-        self._load()
+        run_blocking(self, engine.agent_clear,
+                     lambda res: self._after(res, "Agent cleared"))
 
     def action_refresh(self) -> None:
         self._load()

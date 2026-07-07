@@ -8,6 +8,7 @@ from textual.containers import Vertical
 
 from sshop import engine
 from sshop.config import Tunnel, load_aliases, load_tunnels, load_snippets, tunnel_running
+from sshop.worker import run_blocking
 from sshop.widgets.stats_header import StatsHeader
 from sshop.widgets.keybar import KeyBar
 
@@ -77,21 +78,26 @@ class TunnelsScreen(Screen):
             return self._tunnels[idx]
         return None
 
+    def _after(self, result: tuple[int, str], fallback: str) -> None:
+        code, msg = result
+        self.notify(msg.strip() or fallback,
+                    severity="information" if code == 0 else "error")
+        self._load()
+
     def action_start(self) -> None:
         t = self._focused_tunnel()
         if t:
-            code, msg = engine.tunnel_start(t.name)
-            self.notify(msg.strip() or f"Started {t.name}",
-                        severity="information" if code == 0 else "error")
-            self._load()
+            name = t.name
+            self.notify(f"Starting {name}…")
+            run_blocking(self, lambda: engine.tunnel_start(name),
+                         lambda res: self._after(res, f"Started {name}"))
 
     def action_stop(self) -> None:
         t = self._focused_tunnel()
         if t:
-            code, msg = engine.tunnel_stop(t.name)
-            self.notify(msg.strip() or f"Stopped {t.name}",
-                        severity="information" if code == 0 else "error")
-            self._load()
+            name = t.name
+            run_blocking(self, lambda: engine.tunnel_stop(name),
+                         lambda res: self._after(res, f"Stopped {name}"))
 
     def action_add(self) -> None:
         with self.app.suspend():
@@ -100,13 +106,19 @@ class TunnelsScreen(Screen):
 
     def action_delete(self) -> None:
         t = self._focused_tunnel()
-        if t:
-            code, msg = engine.tunnel_remove(t.name)
-            if code == 0:
-                self.notify(f"Removed {t.name}")
-                self._load()
-            else:
-                self.notify(f"Error: {msg}", severity="error")
+        if not t:
+            return
+        from sshop.modals import ConfirmModal
+        name = t.name
+        self.app.push_screen(
+            ConfirmModal(f"Remove tunnel [bold]{name}[/bold]?\n"
+                         f"[dim]Stops it first if running[/dim]",
+                         confirm_label="Remove"),
+            callback=lambda ok: run_blocking(
+                self, lambda: engine.tunnel_remove(name),
+                lambda res: self._after(res, f"Removed {name}"),
+            ) if ok else None,
+        )
 
     def action_refresh(self) -> None:
         self._load()

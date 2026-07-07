@@ -8,6 +8,7 @@ from textual.containers import Horizontal, Vertical
 
 from sshop import engine
 from sshop.config import Snippet, load_aliases, load_bootstrapped_aliases, load_snippets, load_tunnels
+from sshop.worker import run_blocking
 from sshop.widgets.stats_header import StatsHeader
 from sshop.widgets.keybar import KeyBar
 
@@ -334,9 +335,13 @@ class SnippetsScreen(Screen):
     def _on_delete_confirmed(self, confirmed: bool, name: str) -> None:
         if not confirmed:
             return
-        code, msg = engine.snip_delete(name)
-        if code == 0:
-            self.notify(f"Deleted snippet '{name}'")
-        else:
-            self.notify(f"Error: {msg}", severity="error")
-        self._load()
+
+        def _done(res: tuple[int, str]) -> None:
+            code, msg = res
+            if code == 0:
+                self.notify(f"Deleted snippet '{name}'")
+            else:
+                self.notify(f"Error: {msg}", severity="error")
+            self._load()
+
+        run_blocking(self, lambda: engine.snip_delete(name), _done)

@@ -13,6 +13,7 @@ from textual import work
 from sshop.config import Alias, load_aliases, load_audit_threshold, effective_threshold, load_tunnels, load_snippets
 from sshop.widgets.stats_header import StatsHeader
 from sshop.widgets.keybar import KeyBar
+from sshop.worker import run_blocking
 from sshop import engine
 
 
@@ -284,6 +285,9 @@ class HomeScreen(Screen):
             key = table.add_column(label, width=width)
             self._col_keys[label] = key
         self._load_aliases()
+        # the (hidden) filter input is first in the DOM and would otherwise
+        # grab initial focus, sending every keystroke into an invisible box
+        table.focus()
         self.run_status_probes()
 
     def _sorted_aliases(self, aliases: list[Alias]) -> list[Alias]:
@@ -413,11 +417,24 @@ class HomeScreen(Screen):
             from sshop.screens.sftp import SftpScreen
             self.app.push_screen(SftpScreen(alias))
 
+    def _after_action(self, result: tuple[int, str], ok_msg: str) -> None:
+        """Shared completion handler: notify + reload on success, error otherwise."""
+        code, msg = result
+        if code == 0:
+            self.notify(ok_msg)
+            self._load_aliases()
+        else:
+            self.notify(f"Error: {msg}", severity="error")
+
     def action_wake(self) -> None:
         alias = self._focused_alias()
         if alias:
-            code, msg = engine.wake(alias.name)
-            self.notify(msg.strip() or f"Sent WOL to {alias.name}")
+            name = alias.name
+            run_blocking(
+                self,
+                lambda: engine.wake(name),
+                lambda res: self.notify(res[1].strip() or f"Sent WOL to {name}"),
+            )
 
     def action_rotate_key(self) -> None:
         alias = self._focused_alias()
@@ -429,17 +446,14 @@ class HomeScreen(Screen):
     def action_pin_toggle(self) -> None:
         alias = self._focused_alias()
         if alias:
-            if alias.pinned:
-                code, msg = engine.unpin_alias(alias.name)
-                label = "Unpinned"
-            else:
-                code, msg = engine.pin_alias(alias.name)
-                label = "Pinned"
-            if code == 0:
-                self.notify(f"{label} {alias.name}")
-                self._load_aliases()
-            else:
-                self.notify(f"Error: {msg}", severity="error")
+            fn = engine.unpin_alias if alias.pinned else engine.pin_alias
+            label = "Unpinned" if alias.pinned else "Pinned"
+            name = alias.name
+            run_blocking(
+                self,
+                lambda: fn(name),
+                lambda res: self._after_action(res, f"{label} {name}"),
+            )
 
     def action_rename(self) -> None:
         alias = self._focused_alias()
@@ -450,12 +464,12 @@ class HomeScreen(Screen):
     def _on_rename(self, new_name: str | None) -> None:
         alias = self._focused_alias()
         if new_name and alias and new_name != alias.name:
-            code, msg = engine.rename_alias(alias.name, new_name)
-            if code == 0:
-                self.notify(f"Renamed to {new_name}")
-                self._load_aliases()
-            else:
-                self.notify(f"Error: {msg}", severity="error")
+            old = alias.name
+            run_blocking(
+                self,
+                lambda: engine.rename_alias(old, new_name),
+                lambda res: self._after_action(res, f"Renamed to {new_name}"),
+            )
 
     def action_clone(self) -> None:
         alias = self._focused_alias()
@@ -477,9 +491,15 @@ class HomeScreen(Screen):
 
     def _on_run_cmd(self, alias_name: str, cmd: str | None) -> None:
         if cmd:
-            code, out = engine.run_remote(alias_name, cmd)
             from sshop.modals import OutputModal
-            self.app.push_screen(OutputModal(f"okssh run {alias_name}", out or "(no output)"))
+            self.notify(f"Running on {alias_name}…")
+            run_blocking(
+                self,
+                lambda: engine.run_remote(alias_name, cmd),
+                lambda res: self.app.push_screen(
+                    OutputModal(f"okssh run {alias_name}", res[1] or "(no output)")
+                ),
+            )
 
     def action_delete(self) -> None:
         alias = self._focused_alias()
@@ -493,14 +513,13 @@ class HomeScreen(Screen):
     def _on_delete_confirmed(self, result: tuple[bool, bool] | None, name: str) -> None:
         if not result or not result[0]:
             return
-        confirmed, delete_keys = result
-        code, msg = engine.remove_alias(name, delete_keys=delete_keys)
-        if code == 0:
-            suffix = " and its key files" if delete_keys else ""
-            self.notify(f"Deleted {name}{suffix}")
-            self._load_aliases()
-        else:
-            self.notify(f"Error: {msg}", severity="error")
+        delete_keys = result[1]
+        suffix = " and its key files" if delete_keys else ""
+        run_blocking(
+            self,
+            lambda: engine.remove_alias(name, delete_keys=delete_keys),
+            lambda res: self._after_action(res, f"Deleted {name}{suffix}"),
+        )
 
     # ── screen navigation ──────────────────────────────────────────────────────
 
@@ -542,7 +561,6 @@ class HomeScreen(Screen):
     # ── global actions ─────────────────────────────────────────────────────────
 
     def action_audit(self) -> None:
-        code, out = engine.audit()
         from sshop.modals import AuditOutputModal, ThresholdModal
 
         def _after_audit(open_threshold: bool) -> None:
@@ -556,21 +574,35 @@ class HomeScreen(Screen):
                 return
             val = val.strip().lower()
             if val in ("off", "never", "disable"):
-                engine.run(["prefer", "audit_threshold", "off"])
-                self.notify("Key rotation auditing disabled.", severity="warning")
-                self._load_aliases()
+                run_blocking(
+                    self,
+                    lambda: engine.run(["prefer", "audit_threshold", "off"]),
+                    lambda _res: self._after_action((0, ""), "Key rotation auditing disabled."),
+                )
             elif val.isdigit() and int(val) > 0:
-                engine.run(["prefer", "audit_threshold", val])
-                self.notify(f"Rotation threshold set to {val} days.", severity="information")
-                self._load_aliases()
+                run_blocking(
+                    self,
+                    lambda: engine.run(["prefer", "audit_threshold", val]),
+                    lambda _res: self._after_action((0, ""), f"Rotation threshold set to {val} days."),
+                )
 
-        self.app.push_screen(AuditOutputModal(out or "No issues found."), _after_audit)
+        run_blocking(
+            self,
+            engine.audit,
+            lambda res: self.app.push_screen(
+                AuditOutputModal(res[1] or "No issues found."), _after_audit
+            ),
+        )
 
     def action_diff(self) -> None:
-        code, out = engine.diff()
         from sshop.modals import OutputModal
-        label = "Sync Diff" + (" [dim](no sync folder configured)[/dim]" if code != 0 else "")
-        self.app.push_screen(OutputModal(label, out or "No differences found."))
+
+        def _done(res: tuple[int, str]) -> None:
+            code, out = res
+            label = "Sync Diff" + (" [dim](no sync folder configured)[/dim]" if code != 0 else "")
+            self.app.push_screen(OutputModal(label, out or "No differences found."))
+
+        run_blocking(self, engine.diff, _done)
 
     def action_export(self) -> None:
         from sshop.modals import ExportFormatModal
@@ -579,10 +611,13 @@ class HomeScreen(Screen):
     def _on_export_format(self, fmt: str | None) -> None:
         if fmt is None:
             return
-        code, out = engine.export_aliases("ansible" if fmt == "ansible" else "")
         from sshop.modals import OutputModal
         title = "Export — Ansible inventory" if fmt == "ansible" else "Export — SSH config"
-        self.app.push_screen(OutputModal(title, out or "(no output)"))
+        run_blocking(
+            self,
+            lambda: engine.export_aliases("ansible" if fmt == "ansible" else ""),
+            lambda res: self.app.push_screen(OutputModal(title, res[1] or "(no output)")),
+        )
 
     def action_tag_alias(self) -> None:
         alias = self._focused_alias()
@@ -598,17 +633,13 @@ class HomeScreen(Screen):
         if not result:
             return
         action, group = result
-        if action == "tag":
-            code, msg = engine.tag_alias(alias_name, group)
-            label = f"Added tag '{group}'"
-        else:
-            code, msg = engine.untag_alias(alias_name, group)
-            label = f"Removed tag '{group}'"
-        if code == 0:
-            self.notify(label)
-            self._load_aliases()
-        else:
-            self.notify(f"Error: {msg}", severity="error")
+        fn = engine.tag_alias if action == "tag" else engine.untag_alias
+        label = f"Added tag '{group}'" if action == "tag" else f"Removed tag '{group}'"
+        run_blocking(
+            self,
+            lambda: fn(alias_name, group),
+            lambda res: self._after_action(res, label),
+        )
 
     def action_filter_open(self) -> None:
         box = self.query_one("#filter-input", Input)
