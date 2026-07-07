@@ -36,6 +36,14 @@ Screen {
     border: round #2a2b3d;
 }
 
+#filter-input {
+    height: 3;
+    margin: 0 1;
+    border: round #7aa2f7;
+    background: #1e2030;
+    color: #c0caf5;
+}
+
 /* ── Alias table ─────────────────────────────────────────────────────────── */
 
 DataTable {

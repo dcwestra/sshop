@@ -10,7 +10,7 @@ def _kb(key: str, desc: str) -> str:
 
 
 _ROW1 = [
-    ("a", "add"), ("t", "tunnels"), ("s", "snippets"), ("l", "log"),
+    ("/", "filter"), ("a", "add"), ("t", "tunnels"), ("s", "snippets"), ("l", "log"),
     ("G", "ssh agent"), ("b", "backup"), ("m", "templates"), ("u", "key audit"),
     ("?", "help"), ("q", "quit"),
 ]

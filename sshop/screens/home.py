@@ -6,7 +6,7 @@ from pathlib import Path
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen, ModalScreen
-from textual.widgets import Button, Checkbox, DataTable, Label, Static
+from textual.widgets import Button, Checkbox, DataTable, Input, Label, Static
 from textual.containers import Grid, Horizontal, Vertical
 from textual import work
 
@@ -45,6 +45,7 @@ _HELP_TEXT = """\
   [cyan]B[/cyan]      Bootstrap
 
 [bold]Global[/bold]
+  [cyan]/[/cyan]      Filter aliases (Esc clears)
   [cyan]u[/cyan]      Key audit (all aliases)
   [cyan]d[/cyan]      Sync diff
   [cyan]E[/cyan]      Export aliases
@@ -57,6 +58,20 @@ _HELP_TEXT = """\
 # Column index → Alias attribute for sorting
 _SORT_COLS  = ["name", "hostname", "group", "key_type", "last_connect", "key_age_days", "latency_ms", "note"]
 _COL_LABELS = ["ALIAS", "HOST", "GROUP", "TYPE", "LAST", "KEY AGE", "PING", "NOTE"]
+
+
+def _filter_aliases(aliases: list[Alias], query: str) -> list[Alias]:
+    """Token filter: every whitespace-separated token must appear (case-
+    insensitive substring) somewhere in name/hostname/group/note."""
+    tokens = query.strip().lower().split()
+    if not tokens:
+        return aliases
+    result = []
+    for a in aliases:
+        haystack = f"{a.name} {a.hostname} {a.group} {a.note}".lower()
+        if all(t in haystack for t in tokens):
+            result.append(a)
+    return result
 
 
 def _key_age_markup(days: int | None, threshold: int | None) -> str:
@@ -214,6 +229,8 @@ class HomeScreen(Screen):
         Binding("m", "templates", "Templates", show=False),
         Binding("B", "bootstrap", "Bootstrap", show=False),
         # global
+        Binding("/", "filter_open", "Filter", show=False),
+        Binding("escape", "filter_clear", "Clear filter", show=False),
         Binding("u", "audit", "Audit"),
         Binding("d", "diff", "Diff", show=False),
         Binding("E", "export", "Export"),
@@ -227,7 +244,9 @@ class HomeScreen(Screen):
 
     def __init__(self):
         super().__init__()
-        self._aliases: list[Alias] = []
+        self._aliases: list[Alias] = []        # visible (filtered) rows
+        self._all_aliases: list[Alias] = []    # everything loaded from disk
+        self._filter_text: str = ""
         self._sort_col: str | None = None
         self._sort_reverse: bool = False
         self._show_hidden: bool = False
@@ -239,12 +258,15 @@ class HomeScreen(Screen):
         yield StatsHeader(id="stats-header")
         with Horizontal(id="main-layout"):
             with Vertical(id="left-pane"):
+                yield Input(placeholder="filter — name, host, group, note…",
+                            id="filter-input")
                 yield DataTable(id="alias-table", cursor_type="row", zebra_stripes=True)
             yield DetailPanel(id="detail-panel")
         yield KeyBar()
 
     def on_mount(self) -> None:
         self._startup_audit_check()
+        self.query_one("#filter-input", Input).display = False
         table = self.query_one("#alias-table", DataTable)
         col_specs = [
             ("★",       1),
@@ -282,12 +304,13 @@ class HomeScreen(Screen):
     def _load_aliases(self) -> None:
         raw = load_aliases(show_hidden=self._show_hidden)
         # carry over probe results — reloading from disk must not blank the PING column
-        probed = {a.name: (a.reachable, a.latency_ms) for a in self._aliases
+        probed = {a.name: (a.reachable, a.latency_ms) for a in self._all_aliases
                   if a.reachable is not None}
         for a in raw:
             if a.name in probed:
                 a.reachable, a.latency_ms = probed[a.name]
-        self._aliases = self._sorted_aliases(raw)
+        self._all_aliases = raw
+        self._aliases = self._sorted_aliases(_filter_aliases(raw, self._filter_text))
         table = self.query_one("#alias-table", DataTable)
         table.clear()
 
@@ -320,6 +343,8 @@ class HomeScreen(Screen):
             self._row_keys[a.name] = rk
         if self._aliases:
             self.query_one("#detail-panel", DetailPanel).show(self._aliases[0])
+        else:
+            self.query_one("#detail-panel", DetailPanel).show(None)
 
         # update header stats
         try:
@@ -585,6 +610,37 @@ class HomeScreen(Screen):
         else:
             self.notify(f"Error: {msg}", severity="error")
 
+    def action_filter_open(self) -> None:
+        box = self.query_one("#filter-input", Input)
+        box.display = True
+        box.focus()
+
+    def action_filter_clear(self) -> None:
+        box = self.query_one("#filter-input", Input)
+        if not box.display and not self._filter_text:
+            return
+        box.value = ""
+        box.display = False
+        self._filter_text = ""
+        self._load_aliases()
+        self.query_one("#alias-table", DataTable).focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "filter-input":
+            # The "/" that opened the filter also lands in the input; slashes
+            # can't occur in alias/host/group/note, so drop them outright.
+            if "/" in event.value:
+                event.input.value = event.value.replace("/", "")
+                return  # the value change re-fires this handler
+            self._filter_text = event.value
+            self._load_aliases()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        # Enter keeps the filter active and moves focus to the table so the
+        # next Enter connects to the highlighted match.
+        if event.input.id == "filter-input":
+            self.query_one("#alias-table", DataTable).focus()
+
     def action_toggle_hidden(self) -> None:
         self._show_hidden = not self._show_hidden
         self._load_aliases()
@@ -638,7 +694,9 @@ class HomeScreen(Screen):
     async def run_status_probes(self) -> None:
         import asyncio
         table = self.query_one("#alias-table", DataTable)
-        probed = [a for a in self._aliases if a.hostname]
+        # probe everything, not just the filtered view — the row-key guard
+        # below skips aliases that aren't currently displayed
+        probed = [a for a in self._all_aliases if a.hostname]
 
         def _port(a: Alias) -> int:
             try:
