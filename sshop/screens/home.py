@@ -6,7 +6,7 @@ from pathlib import Path
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen, ModalScreen
-from textual.widgets import Button, DataTable, Label, Static
+from textual.widgets import Button, Checkbox, DataTable, Label, Static
 from textual.containers import Grid, Horizontal, Vertical
 from textual import work
 
@@ -461,18 +461,21 @@ class HomeScreen(Screen):
         if alias:
             name = alias.name
             self.app.push_screen(
-                ConfirmDelete(name),
-                callback=lambda confirmed: self._on_delete_confirmed(confirmed, name),
+                ConfirmDelete(name, has_key=bool(alias.identity_file)),
+                callback=lambda result: self._on_delete_confirmed(result, name),
             )
 
-    def _on_delete_confirmed(self, confirmed: bool, name: str) -> None:
-        if confirmed:
-            code, msg = engine.remove_alias(name)
-            if code == 0:
-                self.notify(f"Deleted {name}")
-                self._load_aliases()
-            else:
-                self.notify(f"Error: {msg}", severity="error")
+    def _on_delete_confirmed(self, result: tuple[bool, bool] | None, name: str) -> None:
+        if not result or not result[0]:
+            return
+        confirmed, delete_keys = result
+        code, msg = engine.remove_alias(name, delete_keys=delete_keys)
+        if code == 0:
+            suffix = " and its key files" if delete_keys else ""
+            self.notify(f"Deleted {name}{suffix}")
+            self._load_aliases()
+        else:
+            self.notify(f"Error: {msg}", severity="error")
 
     # ── screen navigation ──────────────────────────────────────────────────────
 
@@ -663,7 +666,8 @@ class HomeScreen(Screen):
 
 # ── Confirm delete modal ───────────────────────────────────────────────────────
 
-class ConfirmDelete(ModalScreen[bool]):
+class ConfirmDelete(ModalScreen[tuple[bool, bool]]):
+    """Returns (confirmed, delete_keys)."""
 
     DEFAULT_CSS = """
     ConfirmDelete {
@@ -672,9 +676,9 @@ class ConfirmDelete(ModalScreen[bool]):
     ConfirmDelete > Grid {
         grid-size: 2;
         grid-gutter: 1 2;
-        grid-rows: 1fr 3;
+        grid-rows: 1fr auto 3;
         padding: 1 2;
-        width: 50;
+        width: 54;
         height: 10;
         border: solid $error;
         background: $surface;
@@ -685,18 +689,37 @@ class ConfirmDelete(ModalScreen[bool]):
         width: 1fr;
         content-align: center middle;
     }
+    ConfirmDelete Checkbox {
+        column-span: 2;
+        width: 1fr;
+        background: transparent;
+        border: none;
+    }
     ConfirmDelete Button { width: 100%; }
     """
 
-    def __init__(self, alias_name: str):
+    def __init__(self, alias_name: str, has_key: bool = False):
         super().__init__()
         self._alias_name = alias_name
+        self._has_key = has_key
 
     def compose(self) -> ComposeResult:
         with Grid():
             yield Label(f"Delete alias [bold]{self._alias_name}[/bold]?")
+            if self._has_key:
+                yield Checkbox("Also delete key files", value=False, id="chk-keys")
             yield Button("Delete", variant="error", id="btn-yes")
             yield Button("Cancel", variant="default", id="btn-no")
 
+    def on_mount(self) -> None:
+        if self._has_key:
+            self.query_one(Grid).styles.height = 13
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id == "btn-yes")
+        delete_keys = (
+            self._has_key and self.query_one("#chk-keys", Checkbox).value
+        )
+        self.dismiss((event.button.id == "btn-yes", delete_keys))
+
+    def key_escape(self) -> None:
+        self.dismiss((False, False))

@@ -72,9 +72,10 @@ def connect(alias: str) -> None:
     subprocess.run([OKSSH_BIN, "connect", alias], env=_CLI_ENV)
 
 
-def remove_alias(alias: str) -> tuple[int, str]:
-    # pipe "y" to answer okssh's confirmation prompt
-    code, out, err = run(["rm", alias], input_text="y\n")
+def remove_alias(alias: str, delete_keys: bool = False) -> tuple[int, str]:
+    """Remove an alias non-interactively; optionally delete its key pair."""
+    args = ["rm", alias, "--yes", "--keys" if delete_keys else "--keep-keys"]
+    code, out, err = run(args)
     return code, err or out
 
 
