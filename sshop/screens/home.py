@@ -107,15 +107,17 @@ def _key_badge(key_type: str) -> str:
 
 
 def _latency_markup(ms: int | None, reachable: bool | None) -> str:
+    # Bands sized for a full SSH handshake (okssh status --json), not raw
+    # TCP RTT — LAN handshakes land around 100-300ms.
     if reachable is None:
         return "[dim]○[/dim]"
     if not reachable:
         return "[#f7768e]✗[/#f7768e]"
     if ms is None:
         return "[#9ece6a]●[/#9ece6a]"
-    if ms < 50:
+    if ms < 300:
         return f"[#9ece6a]● {ms}ms[/#9ece6a]"
-    if ms < 200:
+    if ms < 1000:
         return f"[#e0af68]● {ms}ms[/#e0af68]"
     return f"[#f7768e]● {ms}ms[/#f7768e]"
 
@@ -723,10 +725,26 @@ class HomeScreen(Screen):
 
     @work(exclusive=True)
     async def run_status_probes(self) -> None:
+        # Preferred: one `okssh status --json` call — full SSH reachability
+        # (detects auth failures, honors jump hosts), probed in parallel by
+        # okssh itself.
+        results = await engine.status_json()
+        if results is not None:
+            by_alias = {r.get("alias"): r for r in results}
+            probed = []
+            for alias in self._all_aliases:
+                r = by_alias.get(alias.name)
+                if r is None:
+                    continue
+                alias.reachable = bool(r.get("reachable"))
+                ms = r.get("latency_ms")
+                alias.latency_ms = int(ms) if isinstance(ms, (int, float)) else None
+                probed.append(alias)
+            self._apply_probe_results(probed)
+            return
+
+        # Fallback (okssh without --json): plain TCP connect probes.
         import asyncio
-        table = self.query_one("#alias-table", DataTable)
-        # probe everything, not just the filtered view — the row-key guard
-        # below skips aliases that aren't currently displayed
         probed = [a for a in self._all_aliases if a.hostname]
 
         def _port(a: Alias) -> int:
@@ -737,17 +755,26 @@ class HomeScreen(Screen):
 
         tasks = [engine.probe_alias(a.hostname, _port(a)) for a in probed]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        ping_col_key = self._col_keys.get("PING")
+        done = []
         for alias, result in zip(probed, results):
             if isinstance(result, Exception):
                 continue
-            reachable, ms = result
-            alias.reachable = reachable
-            alias.latency_ms = ms
+            alias.reachable, alias.latency_ms = result
+            done.append(alias)
+        self._apply_probe_results(done)
+
+    def _apply_probe_results(self, aliases: list[Alias]) -> None:
+        """Paint probe outcomes into the PING column (visible rows only)."""
+        table = self.query_one("#alias-table", DataTable)
+        ping_col_key = self._col_keys.get("PING")
+        for alias in aliases:
             row_key = self._row_keys.get(alias.name)
             if row_key is None or ping_col_key is None:
                 continue
-            table.update_cell(row_key, ping_col_key, _latency_markup(ms, reachable))
+            table.update_cell(
+                row_key, ping_col_key,
+                _latency_markup(alias.latency_ms, alias.reachable),
+            )
         focused = self._focused_alias()
         if focused:
             self.query_one("#detail-panel", DetailPanel).show(focused)

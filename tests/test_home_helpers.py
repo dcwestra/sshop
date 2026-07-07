@@ -45,9 +45,10 @@ class TestLatencyMarkup:
         assert "✗" in _latency_markup(None, False)
 
     def test_bands(self):
-        assert "#9ece6a" in _latency_markup(10, True)     # green < 50ms
-        assert "#e0af68" in _latency_markup(100, True)    # yellow 50-200ms
-        assert "#f7768e" in _latency_markup(500, True)    # red > 200ms
+        # sized for full SSH handshake times (okssh status --json)
+        assert "#9ece6a" in _latency_markup(150, True)    # green < 300ms
+        assert "#e0af68" in _latency_markup(500, True)    # yellow 300-1000ms
+        assert "#f7768e" in _latency_markup(1500, True)   # red > 1000ms
 
 
 def test_group_color_deterministic():

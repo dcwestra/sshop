@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -44,9 +45,27 @@ async def run_async(args: list[str]) -> tuple[int, str, str]:
     return proc.returncode or 0, stdout.decode(), stderr.decode()
 
 
+async def status_json() -> list[dict] | None:
+    """Full-SSH reachability for all aliases via `okssh status --json`.
+
+    Returns a list of {alias, host, reachable, latency_ms, last_connect}
+    dicts, or None if the installed okssh doesn't support --json / output
+    isn't parseable (callers fall back to TCP probes).
+    """
+    code, out, _err = await run_async(["status", "--json"])
+    if code != 0:
+        return None
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, list) else None
+
+
 async def probe_alias(hostname: str, port: int = 22, timeout: int = 5) -> tuple[bool, int | None]:
     """TCP connect probe to SSH port. Returns (reachable, latency_ms).
-    Much faster than a full SSH handshake — measures network latency only."""
+    Fallback when `okssh status --json` is unavailable — measures network
+    latency only, can't detect auth failures."""
     t0 = time.monotonic()
     try:
         _, writer = await asyncio.wait_for(
