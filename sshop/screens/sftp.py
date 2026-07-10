@@ -242,6 +242,16 @@ class SftpScreen(Screen):
             key = self._alias.identity_file
             if key:
                 kwargs["client_keys"] = [str(Path(key).expanduser())]
+                # Offer ONLY this host's key. Without this, asyncssh also
+                # presents every key loaded in the ssh-agent, tripping the
+                # server's MaxAuthTries limit ("Too many authentication
+                # failures") before the correct key is ever tried. This is the
+                # asyncssh equivalent of `IdentitiesOnly yes` in ~/.ssh/config,
+                # which asyncssh does not read. Safe because okssh-managed keys
+                # are unencrypted files; if passphrase-protected keys are ever
+                # supported, keep the agent and use `agent_identities` to
+                # restrict it to the matching key instead.
+                kwargs["agent_path"] = None
             self._conn = await asyncssh.connect(**kwargs)
             self._sftp = await self._conn.start_sftp_client()
             try:
