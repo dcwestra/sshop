@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import unquote
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -9,10 +10,21 @@ from textual.widgets import Button, DirectoryTree, Input, Label, Static
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 
 from sshop import engine
-from sshop.config import load_aliases, load_tunnels, load_snippets
+from sshop.markup import plain
 from sshop.worker import run_blocking
 from sshop.widgets.stats_header import StatsHeader
 from sshop.widgets.keybar import KeyBar
+
+
+def clean_path(raw: str) -> str:
+    """Normalise a typed / pasted / drag-and-dropped path: file managers drop
+    'quoted paths' or file:// URIs into terminals. Expands ~."""
+    p = raw.strip()
+    if len(p) >= 2 and p[0] == p[-1] and p[0] in "'\"":
+        p = p[1:-1]
+    if p.startswith("file://"):
+        p = unquote(p[len("file://"):])
+    return str(Path(p).expanduser()) if p else ""
 
 
 class _FilePicker(ModalScreen[str | None]):
@@ -128,9 +140,6 @@ class ImportKeyScreen(Screen):
     }
     """
 
-    def __init__(self):
-        super().__init__()
-
     def compose(self) -> ComposeResult:
         yield StatsHeader(id="ik-header")
         with ScrollableContainer(id="ik-body"):
@@ -157,6 +166,8 @@ class ImportKeyScreen(Screen):
                 yield from _field("Note", "ik-note", "optional description")
             with Horizontal(classes="ik-row"):
                 yield from _field("Group(s)", "ik-group", "work,homelab")
+            with Horizontal(classes="ik-row"):
+                yield from _field("Jump host", "ik-jump", "bastion (optional)")
 
             with Horizontal(id="ik-buttons"):
                 yield Button("Import", variant="success", id="btn-import")
@@ -167,12 +178,6 @@ class ImportKeyScreen(Screen):
         ]])
 
     def on_mount(self) -> None:
-        try:
-            self.query_one("#ik-header", StatsHeader).update_stats(
-                len(load_aliases()), len(load_tunnels()), len(load_snippets())
-            )
-        except Exception:
-            pass
         self.query_one("#ik-keyfile-input", Input).focus()
 
     # ── file browser ──────────────────────────────────────────────────────────
@@ -194,22 +199,27 @@ class ImportKeyScreen(Screen):
         if path:
             self.query_one("#ik-keyfile-input", Input).value = path
 
+    def on_input_submitted(self, _event: Input.Submitted) -> None:
+        # Enter in any field imports (the key bar advertises ↵ import)
+        self._do_import()
+
     # ── import ────────────────────────────────────────────────────────────────
 
     def _do_import(self) -> None:
-        key_file = self.query_one("#ik-keyfile-input", Input).value.strip()
+        key_file = clean_path(self.query_one("#ik-keyfile-input", Input).value)
         alias    = self.query_one("#ik-alias",         Input).value.strip()
         host     = self.query_one("#ik-host",          Input).value.strip()
         port_s   = self.query_one("#ik-port",          Input).value.strip()
         user     = self.query_one("#ik-user",          Input).value.strip()
         note     = self.query_one("#ik-note",          Input).value.strip()
         group    = self.query_one("#ik-group",         Input).value.strip()
+        jump     = self.query_one("#ik-jump",          Input).value.strip()
 
         # Validate required fields
         errors = []
         if not key_file:
             errors.append("Key file path is required")
-        elif not Path(key_file).expanduser().exists():
+        elif not Path(key_file).is_file():
             errors.append(f"Key file not found: {key_file}")
         if not alias:
             errors.append("Alias is required")
@@ -217,20 +227,24 @@ class ImportKeyScreen(Screen):
             errors.append("Hostname is required")
         if not user:
             errors.append("Username is required")
+        if port_s and not (port_s.isdigit() and 0 < int(port_s) < 65536):
+            errors.append("Port must be a number between 1 and 65535")
         if errors:
-            self.notify("\n".join(errors), severity="error", timeout=6)
+            self.notify("\n".join(errors), severity="error", timeout=6, markup=False)
             return
 
-        port = int(port_s) if port_s.isdigit() else 22
+        port = int(port_s) if port_s else 22
 
         btn = self.query_one("#btn-import", Button)
+        if btn.disabled:
+            return
         btn.disabled = True
         btn.label = "Importing…"
         run_blocking(
             self,
             lambda: engine.import_key(
                 alias=alias, key_file=key_file, host=host, user=user,
-                port=port, note=note, group=group,
+                port=port, note=note, group=group, jump=jump,
             ),
             lambda res: self._on_import_done(res, alias),
         )
@@ -241,7 +255,8 @@ class ImportKeyScreen(Screen):
         btn.label = "Import"
         code, msg = result
         if code == 0:
-            self.notify(f"Imported key for [bold]{alias}[/bold]", severity="information")
+            self.notify(f"Imported key for {alias}", severity="information", markup=False)
             self.dismiss(True)
         else:
-            self.notify(msg.strip() or "Import failed", severity="error", timeout=8)
+            self.notify(plain(msg).strip() or "Import failed", severity="error", timeout=8,
+                        markup=False)

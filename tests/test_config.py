@@ -31,7 +31,6 @@ SSH_CONFIG_SAMPLE = """\
 Host web1
     # Note: primary web box
     # Group: prod,homelab
-    # WOL: aa:bb:cc:dd:ee:ff
     HostName 192.0.2.10
     User deploy
     Port 2222
@@ -64,7 +63,6 @@ def test_parse_ssh_config_fields(okssh_home):
     assert web1.port == "2222"
     assert web1.note == "primary web box"
     assert web1.group == "prod,homelab"
-    assert web1.wol_mac == "aa:bb:cc:dd:ee:ff"
     assert web1.proxy_jump == "bastion"
     assert web1.server_alive_interval == "60"
     assert web1.key_type == "ed25519"
@@ -89,6 +87,35 @@ def test_load_aliases_hidden_and_pinned(okssh_home):
     assert "secretbox" in [a.name for a in everything]
 
 
+def test_wol_mac_comes_from_prefs(okssh_home):
+    # okssh stores the MAC as pref wol_mac_<alias> (okssh prefer <a> wol <mac>),
+    # never as a comment in ~/.ssh/config
+    (okssh_home / "ssh_config").write_text(SSH_CONFIG_SAMPLE)
+    (okssh_home / "preferences").write_text("wol_mac_web1=aa:bb:cc:dd:ee:ff\n")
+    aliases = {a.name: a for a in config.load_aliases()}
+    assert aliases["web1"].wol_mac == "aa:bb:cc:dd:ee:ff"
+    assert aliases["db1"].wol_mac == ""
+
+
+def test_parse_equals_syntax_match_blocks_and_first_wins(okssh_home):
+    (okssh_home / "ssh_config").write_text(
+        "Host a\n"
+        "    HostName=192.0.2.1\n"
+        "    Port = 2200\n"
+        "    User first\n"
+        "    User second\n"
+        "    LocalForward 8080 localhost:80\n"
+        "Match host foo\n"
+        "    User matchuser\n"
+        "Host b\n"
+        "    HostName 192.0.2.2\n"
+    )
+    a, b = config._parse_ssh_config()
+    assert (a.hostname, a.port, a.user) == ("192.0.2.1", "2200", "first")   # ssh: first wins
+    assert b.user == ""                     # Match block's User didn't leak anywhere
+    assert [x.name for x in (a, b)] == ["a", "b"]
+
+
 def test_audit_threshold_parsing(okssh_home):
     (okssh_home / "ssh_config").write_text(SSH_CONFIG_SAMPLE)
     (okssh_home / "preferences").write_text(
@@ -98,6 +125,27 @@ def test_audit_threshold_parsing(okssh_home):
     aliases = {a.name: a for a in config.load_aliases()}
     assert config.effective_threshold(aliases["web1"]) is None    # per-host off
     assert config.effective_threshold(aliases["db1"]) == 30       # per-host override
+
+
+def test_effective_threshold_with_preloaded_global(okssh_home):
+    a = config.Alias(name="x")
+    assert config.effective_threshold(a, 45) == 45          # no prefs read
+    assert config.effective_threshold(a, None) is None      # globally off
+    a.audit_threshold = 0                                   # per-host off
+    assert config.effective_threshold(a, 45) is None
+    a.audit_threshold = 10
+    assert config.effective_threshold(a, 45) == 10
+
+
+def test_is_hidden():
+    assert config.is_hidden(config.Alias(name="x", group="lab, Hidden"))
+    assert not config.is_hidden(config.Alias(name="x", group="hiddenish"))
+
+
+def test_keysync_stale(okssh_home):
+    assert config.keysync_stale() is False
+    (okssh_home / "preferences").write_text("keys_sync_stale=1\n")
+    assert config.keysync_stale() is True
 
 
 def test_audit_threshold_defaults(okssh_home):

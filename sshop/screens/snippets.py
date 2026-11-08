@@ -2,83 +2,112 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.content import Content
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, DataTable, SelectionList, Static
+from textual.widgets.selection_list import Selection
 from textual.containers import Horizontal, Vertical
 
 from sshop import engine
-from sshop.config import Snippet, load_aliases, load_bootstrapped_aliases, load_snippets, load_tunnels
+from sshop.config import Snippet, load_aliases, load_bootstrapped_aliases, load_snippets
+from sshop.markup import cell, m, plain
 from sshop.worker import run_blocking
 from sshop.widgets.stats_header import StatsHeader
 from sshop.widgets.keybar import KeyBar
 
 
+class _PickList(SelectionList):
+    """SelectionList where Enter confirms the modal (Space still toggles).
+    Plain SelectionList binds Enter to toggle, so a screen-level Enter
+    binding never fired while the list had focus."""
+
+    BINDINGS = [Binding("enter", "submit", "Confirm", show=False)]
+
+    def action_submit(self) -> None:
+        self.screen.action_confirm()
+
+    def highlighted_value(self) -> str | None:
+        if self.highlighted is None:
+            return None
+        return self.get_option_at_index(self.highlighted).value
+
+
+_PICKER_CSS = """
+{cls} {{
+    align: center middle;
+}}
+{cls} > Vertical {{
+    width: 60;
+    height: auto;
+    max-height: 80vh;
+    padding: 1 2;
+    border: solid {border};
+    background: $surface;
+}}
+{cls} #modal-title {{
+    margin-bottom: 1;
+}}
+{cls} SelectionList {{
+    height: auto;
+    max-height: 20;
+    border: none;
+}}
+{cls} #btn-row {{
+    height: 3;
+    align-horizontal: right;
+    margin-top: 1;
+}}
+{cls} Button {{
+    margin-left: 1;
+    min-width: 10;
+}}
+"""
+
+
+def _selections(names: list[str], preselect: str | None = None) -> list[Selection]:
+    # Content(...) so names render literally
+    return [Selection(Content(n), n, n == preselect) for n in names]
+
 
 class _RunOnModal(ModalScreen[list[str] | None]):
-    """Pick one or more aliases to run a snippet on. Multiple = parallel."""
+    """Pick one or more aliases to run a snippet on. Multiple = parallel.
+    Enter runs on the ticked hosts — or on the highlighted one if none is
+    ticked."""
 
-    BINDINGS = [
-        Binding("enter", "confirm", "Run"),
-        Binding("escape", "cancel", "Cancel"),
-    ]
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    DEFAULT_CSS = _PICKER_CSS.format(cls="_RunOnModal", border="#7aa2f7")
 
-    DEFAULT_CSS = """
-    _RunOnModal {
-        align: center middle;
-    }
-    _RunOnModal > Vertical {
-        width: 60;
-        height: auto;
-        max-height: 80vh;
-        padding: 1 2;
-        border: solid #7aa2f7;
-        background: $surface;
-    }
-    _RunOnModal #modal-title {
-        margin-bottom: 1;
-    }
-    _RunOnModal SelectionList {
-        height: auto;
-        max-height: 20;
-        border: none;
-    }
-    _RunOnModal #btn-row {
-        height: 3;
-        align-horizontal: right;
-        margin-top: 1;
-    }
-    _RunOnModal Button {
-        margin-left: 1;
-        min-width: 10;
-    }
-    """
-
-    def __init__(self, snippet_name: str, aliases: list[str]):
+    def __init__(self, snippet_name: str, aliases: list[str], preselect: str | None = None):
         super().__init__()
         self._snippet_name = snippet_name
         self._aliases = aliases
+        self._preselect = preselect
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(
-                f"[bold #ff9e64]Run:[/bold #ff9e64]  [bold]{self._snippet_name}[/bold]\n"
-                f"[dim]Select target host(s) — multiple = parallel[/dim]",
+                m("[bold #ff9e64]Run:[/bold #ff9e64]  [bold]$s[/bold]\n"
+                  "[dim]Space ticks hosts (several = parallel) · Enter runs[/dim]",
+                  s=self._snippet_name),
                 id="modal-title",
             )
-            yield SelectionList(
-                *[(a, a, False) for a in self._aliases],
-                id="alias-list",
-            )
+            yield _PickList(*_selections(self._aliases, self._preselect), id="alias-list")
             with Horizontal(id="btn-row"):
                 yield Button("Run", variant="primary", id="btn-run")
                 yield Button("Cancel", variant="default", id="btn-cancel")
 
     def on_mount(self) -> None:
-        self.query_one("#alias-list", SelectionList).focus()
+        lst = self.query_one("#alias-list", _PickList)
+        lst.focus()
+        if self._preselect in self._aliases:
+            lst.highlighted = self._aliases.index(self._preselect)
 
     def action_confirm(self) -> None:
-        selected = list(self.query_one("#alias-list", SelectionList).selected)
-        self.dismiss(selected if selected else None)
+        lst = self.query_one("#alias-list", _PickList)
+        selected = list(lst.selected)
+        if not selected and lst.highlighted_value():
+            selected = [lst.highlighted_value()]
+        self.dismiss(selected or None)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -89,48 +118,13 @@ class _RunOnModal(ModalScreen[list[str] | None]):
         else:
             self.dismiss(None)
 
-    def key_escape(self) -> None:
-        self.dismiss(None)
-
 
 class _PushToModal(ModalScreen[list[str] | None]):
-    """Pick bootstrapped hosts to push the snippet list to."""
+    """Pick bootstrapped hosts to push the snippet list to. Enter / "Push
+    selected" push to the ticked hosts, or to ALL of them if none is ticked."""
 
-    BINDINGS = [
-        Binding("enter", "confirm", "Push"),
-        Binding("escape", "cancel", "Cancel"),
-    ]
-
-    DEFAULT_CSS = """
-    _PushToModal {
-        align: center middle;
-    }
-    _PushToModal > Vertical {
-        width: 60;
-        height: auto;
-        max-height: 80vh;
-        padding: 1 2;
-        border: solid #9ece6a;
-        background: $surface;
-    }
-    _PushToModal #modal-title {
-        margin-bottom: 1;
-    }
-    _PushToModal SelectionList {
-        height: auto;
-        max-height: 20;
-        border: none;
-    }
-    _PushToModal #btn-row {
-        height: 3;
-        align-horizontal: right;
-        margin-top: 1;
-    }
-    _PushToModal Button {
-        margin-left: 1;
-        min-width: 10;
-    }
-    """
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    DEFAULT_CSS = _PICKER_CSS.format(cls="_PushToModal", border="#9ece6a")
 
     def __init__(self, hosts: list[str]):
         super().__init__()
@@ -140,24 +134,21 @@ class _PushToModal(ModalScreen[list[str] | None]):
         with Vertical():
             yield Static(
                 "[bold #9ece6a]Push snippets[/bold #9ece6a]\n"
-                "[dim]Select hosts to sync — leave all unchecked to push to all[/dim]",
+                "[dim]Space ticks hosts · Enter pushes (none ticked = all)[/dim]",
                 id="modal-title",
             )
-            yield SelectionList(
-                *[(h, h, False) for h in self._hosts],
-                id="host-list",
-            )
+            yield _PickList(*_selections(self._hosts), id="host-list")
             with Horizontal(id="btn-row"):
                 yield Button("Push all", variant="success", id="btn-all")
                 yield Button("Push selected", variant="primary", id="btn-push")
                 yield Button("Cancel", variant="default", id="btn-cancel")
 
     def on_mount(self) -> None:
-        self.query_one("#host-list", SelectionList).focus()
+        self.query_one("#host-list", _PickList).focus()
 
     def action_confirm(self) -> None:
-        selected = list(self.query_one("#host-list", SelectionList).selected)
-        self.dismiss(selected if selected else self._hosts)
+        selected = list(self.query_one("#host-list", _PickList).selected)
+        self.dismiss(selected or self._hosts)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -166,13 +157,9 @@ class _PushToModal(ModalScreen[list[str] | None]):
         if event.button.id == "btn-all":
             self.dismiss(self._hosts)
         elif event.button.id == "btn-push":
-            selected = list(self.query_one("#host-list", SelectionList).selected)
-            self.dismiss(selected if selected else None)
+            self.action_confirm()
         else:
             self.dismiss(None)
-
-    def key_escape(self) -> None:
-        self.dismiss(None)
 
 
 class SnippetsScreen(Screen):
@@ -205,32 +192,32 @@ class SnippetsScreen(Screen):
         ]])
 
     def on_mount(self) -> None:
-        alias_label = self._focused_alias or "(none)"
-        try:
-            self.query_one("#snip-header", StatsHeader).update_stats(
-                len(load_aliases()), len(load_tunnels()), len(load_snippets())
-            )
-        except Exception:
-            pass
-        self.query_one("#snip-title", Static).update(
-            f" [bold]Snippets[/bold]"
-            f"  [dim]alias:[/dim] [#7dcfff]{alias_label}[/#7dcfff]"
-        )
+        self.query_one("#snip-title", Static).update(m(
+            " [bold]Snippets[/bold]  [dim]alias:[/dim] [#7dcfff]$a[/#7dcfff]",
+            a=self._focused_alias or "(none)",
+        ))
         table = self.query_one("#snip-table", DataTable)
         table.add_columns("NAME", "SUDO", "DESCRIPTION")
         self._load()
 
     def _load(self) -> None:
+        cur = self._focused_snippet()
+        cur_name = cur.name if cur else None
         self._snippets = load_snippets()
         table = self.query_one("#snip-table", DataTable)
         table.clear()
         for s in self._snippets:
             table.add_row(
-                f"[bold]{s.name}[/bold]",
-                "[#e0af68]sudo[/#e0af68]" if s.use_sudo == "yes" else "[dim]—[/dim]",
-                s.description or "[dim]—[/dim]",
+                cell(s.name, "bold"),
+                cell("sudo", "#e0af68") if s.use_sudo == "yes" else cell("—", "dim"),
+                cell(s.description) if s.description else cell("—", "dim"),
                 key=s.name,
             )
+        if cur_name:
+            for i, s in enumerate(self._snippets):
+                if s.name == cur_name:
+                    table.move_cursor(row=i)
+                    break
         self._update_detail()
 
     def _focused_snippet(self) -> Snippet | None:
@@ -248,13 +235,15 @@ class SnippetsScreen(Screen):
             return
         rule = "[#2a2b3d]" + "─" * 26 + "[/#2a2b3d]"
         sudo_note = "  [#e0af68]requires sudo[/#e0af68]\n" if s.use_sudo == "yes" else ""
-        detail.update(
-            f"[bold #ff9e64]{s.name}[/bold #ff9e64]\n\n"
-            f"  [dim] desc[/dim]  {s.description or '[dim]—[/dim]'}\n"
-            f"{sudo_note}\n"
-            f"{rule}\n"
-            f"[#9ece6a]{s.command}[/#9ece6a]\n"
-        )
+        # commands are full of brackets ("[ -f x ]", "grep [a-z]") — $-slots
+        # keep them literal
+        detail.update(m(
+            "[bold #ff9e64]$name[/bold #ff9e64]\n\n"
+            "  [dim] desc[/dim]  $desc\n"
+            + sudo_note + "\n" + rule + "\n"
+            "[#9ece6a]$cmd[/#9ece6a]\n",
+            name=s.name, desc=s.description or "—", cmd=s.command,
+        ))
 
     def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
         self._update_detail()
@@ -265,7 +254,7 @@ class SnippetsScreen(Screen):
             return
         aliases = [a.name for a in load_aliases()]
         self.app.push_screen(
-            _RunOnModal(s.name, aliases),
+            _RunOnModal(s.name, aliases, preselect=self._focused_alias),
             callback=lambda targets: self._on_run_targets(s.name, targets),
         )
 
@@ -328,7 +317,7 @@ class SnippetsScreen(Screen):
             return
         from sshop.modals import ConfirmModal
         self.app.push_screen(
-            ConfirmModal(f"Delete snippet [bold]{s.name}[/bold]?", confirm_label="Delete"),
+            ConfirmModal(m("Delete snippet [bold]$s[/bold]?", s=s.name), confirm_label="Delete"),
             callback=lambda ok: self._on_delete_confirmed(ok, s.name),
         )
 
@@ -339,9 +328,9 @@ class SnippetsScreen(Screen):
         def _done(res: tuple[int, str]) -> None:
             code, msg = res
             if code == 0:
-                self.notify(f"Deleted snippet '{name}'")
+                self.notify(f"Deleted snippet '{name}'", markup=False)
             else:
-                self.notify(f"Error: {msg}", severity="error")
+                self.notify(f"Error: {plain(msg).strip()}", severity="error", markup=False)
             self._load()
 
         run_blocking(self, lambda: engine.snip_delete(name), _done)

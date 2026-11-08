@@ -59,7 +59,7 @@ sshop
 | Screen | Key | Description |
 |--------|-----|-------------|
 | Home | *(default)* | Alias list with live ping, detail panel, and all alias actions — click any column header to sort |
-| SFTP | `f` | Dual-pane file browser (upload / download) |
+| SFTP | `f` | Dual-pane file browser (upload / download); verifies host keys against `~/.ssh/known_hosts` and follows ProxyJump |
 | Add Alias | `a` | Native form — alias, host, port, user, key source, note, group, jump host |
 | Import Key | `I` | Register a private key sent to you — browse or drag-and-drop the key file |
 | Edit Alias | `e` | Opens okssh interactive edit wizard in the terminal |

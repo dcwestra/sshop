@@ -8,6 +8,7 @@ from textual.widgets import Button, Footer, Header, Static
 from textual.containers import Horizontal, Vertical
 
 from sshop import engine
+from sshop.markup import m
 
 OKSSH_BIN = engine.OKSSH_BIN
 _CLI_ENV = engine._CLI_ENV
@@ -28,8 +29,8 @@ class AddEditScreen(Screen):
         yield Header()
         with Vertical(id="add-edit-body"):
             yield Static(
-                f"\n  [bold]Editing alias:[/bold] [cyan]{self._alias}[/cyan]\n\n"
-                f"  This will open the okssh edit wizard in your terminal.\n",
+                m("\n  [bold]Editing alias:[/bold] [cyan]$a[/cyan]\n\n"
+                  "  This will open the okssh edit wizard in your terminal.\n", a=self._alias),
                 id="info"
             )
             with Horizontal(id="buttons"):

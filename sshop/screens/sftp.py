@@ -13,9 +13,71 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Static
 from textual.containers import Horizontal, Vertical
 
-from sshop.config import Alias, load_aliases, load_tunnels, load_snippets
+from sshop.config import Alias, load_aliases
+from sshop.markup import cell, m
 from sshop.widgets.keybar import KeyBar
 from sshop.widgets.stats_header import StatsHeader
+
+
+# ── connection plan (ProxyJump) ────────────────────────────────────────────────
+# asyncssh doesn't apply ~/.ssh/config to the alias (we connect by HostName),
+# so jump hosts are resolved here: each hop is an okssh alias (with its own
+# key, port, user — and its own ProxyJump, recursively, as ssh does) or a
+# literal [user@]host[:port].
+
+def _alias_hop(a: Alias) -> dict:
+    kw: dict = dict(host=a.hostname or a.name, port=int(a.port or 22))
+    if a.user:
+        # only when set: asyncssh rejects an explicit username=None
+        # ("'NoneType' object is not iterable") — omitting it uses the local user
+        kw["username"] = a.user
+    if a.identity_file:
+        kw["client_keys"] = [str(Path(a.identity_file).expanduser())]
+        # Offer ONLY this host's key. Without this, asyncssh also presents
+        # every key loaded in the ssh-agent, tripping the server's
+        # MaxAuthTries limit ("Too many authentication failures") before the
+        # correct key is ever tried — the asyncssh equivalent of
+        # `IdentitiesOnly yes`. Safe because okssh-managed keys are
+        # unencrypted files; for passphrase-protected keys keep the agent
+        # and use `agent_identities` instead.
+        kw["agent_path"] = None
+    return kw
+
+
+def _literal_hop(spec: str) -> dict:
+    user, _, hostport = spec.rpartition("@")
+    host, port = hostport, 22
+    if hostport.startswith("["):                    # [ipv6]:port
+        host, _, rest = hostport[1:].partition("]")
+        if rest.startswith(":") and rest[1:].isdigit():
+            port = int(rest[1:])
+    elif hostport.count(":") == 1:
+        h, _, p = hostport.partition(":")
+        if p.isdigit():
+            host, port = h, int(p)
+    kw: dict = dict(host=host, port=port)
+    if user:
+        kw["username"] = user
+    return kw
+
+
+def connection_plan(alias: Alias, by_name: dict[str, Alias],
+                    _seen: frozenset[str] = frozenset()) -> list[dict]:
+    """asyncssh.connect kwargs, outermost jump first, target last."""
+    seen = _seen | {alias.name}
+    hops: list[dict] = []
+    jump = (alias.proxy_jump or "").strip()
+    if jump and jump.lower() != "none":
+        for spec in (h.strip() for h in jump.split(",")):
+            if not spec:
+                continue
+            if spec in by_name:
+                if spec in seen:
+                    raise ValueError(f"ProxyJump loop through {spec}")
+                hops.extend(connection_plan(by_name[spec], by_name, seen))
+            else:
+                hops.append(_literal_hop(spec))
+    return hops + [_alias_hop(alias)]
 
 
 # ── file entry ─────────────────────────────────────────────────────────────────
@@ -56,7 +118,7 @@ def _list_local(path: Path) -> list[FEntry]:
                 entries.append(FEntry(item.name, item.is_dir(), s.st_size, s.st_mtime))
             except OSError:
                 entries.append(FEntry(item.name, item.is_dir()))
-    except PermissionError:
+    except OSError:      # permission denied, directory vanished, …
         pass
     return entries
 
@@ -137,15 +199,16 @@ class FilePane(Vertical):
         t = self.query_one(DataTable)
         t.clear()
         self.query_one("#fp-path", Static).update(
-            f"[dim]{self._label}[/dim]  [#7aa2f7]{path}[/#7aa2f7]"
+            m("[dim]$label[/dim]  [#7aa2f7]$path[/#7aa2f7]", label=self._label, path=path)
         )
         t.add_row("[dim]  ..[/dim]", "", "", key="__up__")
         for i, e in enumerate(entries):
+            # filenames are literal text ("Report [draft].pdf") — never markup
             if e.is_dir:
-                name = f"[bold #7dcfff]▶ {e.name}/[/bold #7dcfff]"
+                name = cell(f"▶ {e.name}/", "bold #7dcfff")
             else:
-                name = f"  [#c0caf5]{e.name}[/#c0caf5]"
-            t.add_row(name, f"[dim]{e.size_str}[/dim]", f"[dim]{e.mtime_str}[/dim]", key=f"_e{i}_")
+                name = cell(f"  {e.name}", "#c0caf5")
+            t.add_row(name, cell(e.size_str, "dim"), cell(e.mtime_str, "dim"), key=f"_e{i}_")
 
     def selected_entry(self) -> FEntry | None:
         t = self.query_one(DataTable)
@@ -184,9 +247,12 @@ class SftpScreen(Screen):
     }
 """
 
-    def __init__(self, alias: Alias) -> None:
+    def __init__(self, alias: Alias, all_aliases: list[Alias] | None = None) -> None:
         super().__init__()
         self._alias = alias
+        # jump hosts are looked up by alias name
+        self._by_name = {a.name: a for a in (all_aliases or load_aliases(show_hidden=True))}
+        self._conns: list = []      # every hop's connection, outermost first
         self._conn = None
         self._sftp = None
         self._local_path = Path.home()
@@ -204,19 +270,15 @@ class SftpScreen(Screen):
         ]])
 
     def on_mount(self) -> None:
-        try:
-            self.query_one("#stats-header", StatsHeader).update_stats(
-                len(load_aliases()), len(load_tunnels()), len(load_snippets())
-            )
-        except Exception:
-            pass
         self._refresh_local()
         self.query_one("#local-pane", FilePane).set_active(True)
         self.query_one("#local-pane", FilePane).query_one(DataTable).focus()
-        self.query_one("#remote-pane", FilePane).query_one("#fp-path", Static).update(
-            f"[dim]Remote[/dim]  [#565f89]{self._alias.user or 'default'}@{self._alias.hostname}[/#565f89]"
-            f"  [dim]connecting…[/dim]"
-        )
+        via = f"  via {self._alias.proxy_jump}" if self._alias.proxy_jump else ""
+        self.query_one("#remote-pane", FilePane).query_one("#fp-path", Static).update(m(
+            "[dim]Remote[/dim]  [#565f89]$target[/#565f89][dim]$via  connecting…[/dim]",
+            target=f"{self._alias.user or 'default'}@{self._alias.hostname or self._alias.name}",
+            via=via,
+        ))
         self._connect()
 
     # ── local ──────────────────────────────────────────────────────────────────
@@ -232,38 +294,48 @@ class SftpScreen(Screen):
     async def _connect(self) -> None:
         import asyncssh
         try:
-            kwargs: dict = dict(
-                host=self._alias.hostname,
-                port=int(self._alias.port or 22),
-                username=self._alias.user or None,
-                connect_timeout=15,
-                known_hosts=None,
-            )
-            key = self._alias.identity_file
-            if key:
-                kwargs["client_keys"] = [str(Path(key).expanduser())]
-                # Offer ONLY this host's key. Without this, asyncssh also
-                # presents every key loaded in the ssh-agent, tripping the
-                # server's MaxAuthTries limit ("Too many authentication
-                # failures") before the correct key is ever tried. This is the
-                # asyncssh equivalent of `IdentitiesOnly yes` in ~/.ssh/config,
-                # which asyncssh does not read. Safe because okssh-managed keys
-                # are unencrypted files; if passphrase-protected keys are ever
-                # supported, keep the agent and use `agent_identities` to
-                # restrict it to the matching key instead.
-                kwargs["agent_path"] = None
-            self._conn = await asyncssh.connect(**kwargs)
+            plan = connection_plan(self._alias, self._by_name)
+            conn = None
+            for kwargs in plan:
+                # Host keys are verified against ~/.ssh/known_hosts (asyncssh's
+                # default) — the same trust okssh's ssh connections build up
+                # with StrictHostKeyChecking=accept-new.
+                if conn is not None:
+                    kwargs["tunnel"] = conn
+                conn = await asyncssh.connect(connect_timeout=15, **kwargs)
+                self._conns.append(conn)
+            self._conn = conn
             self._sftp = await self._conn.start_sftp_client()
             try:
                 self._remote_path = await self._sftp.realpath(".")
             except Exception:
                 self._remote_path = "/"
             await self._refresh_remote()
-        except Exception as exc:
-            self.query_one("#remote-pane", FilePane).query_one("#fp-path", Static).update(
-                f"[dim]Remote[/dim]  [#f7768e]✗ {exc}[/#f7768e]"
+        except asyncssh.HostKeyNotVerifiable as exc:
+            self._fail(
+                f"host key not trusted ({exc}). It isn't in ~/.ssh/known_hosts yet — "
+                "or it CHANGED. Connect once with ssh (c on the alias) to verify it, "
+                "then reopen SFTP."
             )
-            self.notify(f"SFTP connection failed: {exc}", severity="error")
+        except Exception as exc:
+            self._fail(str(exc) or type(exc).__name__)
+
+    def _fail(self, reason: str) -> None:
+        self._close_all()
+        self.query_one("#remote-pane", FilePane).query_one("#fp-path", Static).update(
+            m("[dim]Remote[/dim]  [#f7768e]✗ $r[/#f7768e]", r=reason)
+        )
+        self.notify(f"SFTP connection failed: {reason}", severity="error", timeout=12, markup=False)
+
+    def _close_all(self) -> None:
+        for conn in reversed(self._conns):
+            try:
+                conn.close()
+            except Exception:
+                pass
+        self._conns.clear()
+        self._conn = None
+        self._sftp = None
 
     async def _refresh_remote(self) -> None:
         if self._sftp is None:
@@ -311,7 +383,7 @@ class SftpScreen(Screen):
         try:
             self._remote_path = await self._sftp.realpath(new)
         except Exception as exc:
-            self.notify(f"Cannot navigate: {exc}", severity="error")
+            self.notify(f"Cannot navigate: {exc}", severity="error", markup=False)
             return
         await self._refresh_remote()
 
@@ -351,9 +423,9 @@ class SftpScreen(Screen):
             else:
                 await self._sftp.get(src, dst, recurse=is_dir)
                 self._refresh_local()
-            self.notify(f"[#9ece6a]Copied {name}[/#9ece6a]")
+            self.notify(f"Copied {name}", markup=False)
         except Exception as exc:
-            self.notify(f"Copy failed: {exc}", severity="error")
+            self.notify(f"Copy failed: {exc}", severity="error", markup=False)
 
     # ── delete ─────────────────────────────────────────────────────────────────
 
@@ -369,7 +441,8 @@ class SftpScreen(Screen):
         kind = "directory (recursive!)" if entry.is_dir else "file"
         self.app.push_screen(
             ConfirmModal(
-                f"Delete {self._active} {kind}\n[bold]{entry.name}[/bold]?",
+                m("Delete $side $kind\n[bold]$name[/bold]?",
+                  side=self._active, kind=kind, name=entry.name),
                 confirm_label="Delete",
             ),
             callback=lambda ok: self._delete_worker(entry.name, entry.is_dir) if ok else None,
@@ -386,16 +459,15 @@ class SftpScreen(Screen):
                 path = self._remote_path.rstrip("/") + "/" + name
                 await (_rmtree_remote(self._sftp, path) if is_dir else self._sftp.remove(path))
                 await self._refresh_remote()
-            self.notify(f"Deleted {name}")
+            self.notify(f"Deleted {name}", markup=False)
         except Exception as exc:
-            self.notify(f"Delete failed: {exc}", severity="error")
+            self.notify(f"Delete failed: {exc}", severity="error", markup=False)
 
     # ── close ──────────────────────────────────────────────────────────────────
 
     def action_dismiss_screen(self) -> None:
-        if self._conn:
-            try:
-                self._conn.close()
-            except Exception:
-                pass
+        self._close_all()
         self.dismiss()
+
+    def on_unmount(self) -> None:
+        self._close_all()

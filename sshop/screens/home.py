@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 import time
 from pathlib import Path
+
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen, ModalScreen
@@ -10,8 +12,10 @@ from textual.widgets import Button, Checkbox, DataTable, Input, Label, Static
 from textual.containers import Grid, Horizontal, Vertical
 from textual import work
 
-from sshop.config import (Alias, effective_threshold, files_snapshot, load_aliases,
-                          load_audit_threshold, load_snippets, load_tunnels)
+from sshop.config import (Alias, effective_threshold, files_snapshot, is_hidden,
+                          keysync_stale, load_aliases, load_audit_threshold,
+                          load_snippets, load_tunnels)
+from sshop.markup import cell, m, plain
 from sshop.widgets.stats_header import StatsHeader
 from sshop.widgets.keybar import KeyBar
 from sshop.worker import run_blocking
@@ -57,9 +61,19 @@ _HELP_TEXT = """\
 """
 
 
-# Column index → Alias attribute for sorting
-_SORT_COLS  = ["name", "hostname", "group", "key_type", "last_connect", "key_age_days", "latency_ms", "note"]
-_COL_LABELS = ["ALIAS", "HOST", "GROUP", "TYPE", "LAST", "KEY AGE", "PING", "NOTE"]
+# (column key/label, width, Alias attribute it sorts by — None = not sortable)
+_COLUMNS = [
+    ("★",       1,    None),
+    ("ALIAS",   None, "name"),
+    ("HOST",    None, "hostname"),
+    ("GROUP",   None, "group"),
+    ("TYPE",    5,    "key_type"),
+    ("LAST",    10,   "last_connect"),
+    ("KEY AGE", 8,    "key_age_days"),
+    ("PING",    8,    "latency_ms"),
+    ("NOTE",    None, "note"),
+]
+_SORT_ATTR = {label: attr for label, _w, attr in _COLUMNS if attr}
 
 
 def _filter_aliases(aliases: list[Alias], query: str) -> list[Alias]:
@@ -104,6 +118,8 @@ def _group_color(group: str) -> str:
 
 
 def _key_badge(key_type: str) -> str:
+    # literal "[ed]" etc. — always render via cell()/$-variables, never inside
+    # a markup string, where "[ed]" would be swallowed as a style tag
     return {"ed25519": "[ed]", "rsa": "[rsa]", "ecdsa": "[ec] "}.get(key_type, "    ")
 
 
@@ -123,6 +139,19 @@ def _latency_markup(ms: int | None, reachable: bool | None) -> str:
     return f"[#f7768e]● {ms}ms[/#f7768e]"
 
 
+def _rotation_due(aliases: list[Alias], global_threshold: int | None) -> int:
+    """Keys needing attention: older than their threshold, or configured but
+    missing on disk (same rule as `okssh audit`, minus aliases without keys)."""
+    due = 0
+    for a in aliases:
+        threshold = effective_threshold(a, global_threshold)
+        if threshold is None or not a.identity_file:
+            continue
+        if a.key_age_days is None or a.key_age_days >= threshold:
+            due += 1
+    return due
+
+
 class DetailPanel(Static):
     """Right-pane alias detail, updated on cursor move."""
 
@@ -136,74 +165,60 @@ class DetailPanel(Static):
     }
     """
 
+    _KEYS = [
+        ("↵", "connect"), ("P", "connect + profile"), ("f", "sftp"), ("e", "edit"),
+        ("k", "rotate key"), ("p", "pin / unpin"), ("n", "rename"), ("C", "clone"),
+        ("g", "tag / group"), ("x", "remote cmd"), ("w", "wake-on-LAN"),
+        ("B", "bootstrap"), ("D", "delete"),
+    ]
+
     def show(self, alias: Alias | None) -> None:
         if alias is None:
             self.update("")
             return
-
         color = _group_color(alias.group)
-        badge = _key_badge(alias.key_type)
-        lat = _latency_markup(alias.latency_ms, alias.reachable)
-        pin = " [#e0af68]★[/#e0af68]" if alias.pinned else ""
-        rule = f"[#2a2b3d]{'─' * 26}[/#2a2b3d]"
-
-        # title bar: name + status dot on right
-        status_dot = lat if alias.reachable is not None else ""
-        title = f"[bold #ff9e64]{alias.name}[/bold #ff9e64]{pin}"
-
-        # optional fields
-        jump = (f"\n  [dim]{'jump':>5}[/dim]  [#565f89]{alias.proxy_jump}[/#565f89]"
-                if alias.proxy_jump else "")
-        wol  = (f"\n  [dim]{'wol':>5}[/dim]  [#565f89]{alias.wol_mac}[/#565f89]"
-                if alias.wol_mac else "")
-        last = (f"\n  [dim]{'last':>5}[/dim]  {alias.last_connect}"
-                if alias.last_connect else "")
-
-        # key path shortened for display
         key_display = alias.identity_file
         home = str(Path.home())
         if key_display.startswith(home):
             key_display = "~" + key_display[len(home):]
 
-        group_str = (f"[{color}]◆ {alias.group}[/{color}]"
-                     if alias.group else "[dim]—[/dim]")
-
-        text = (
-            f"{title}\n"
-            f"[dim]{alias.note}[/dim]\n" if alias.note else f"{title}\n"
+        # Fixed markup with $-slots: every value is inserted as literal text
+        # (notes and paths may contain "[" — see sshop.markup)
+        parts = [m("[bold #ff9e64]$name[/bold #ff9e64]", name=alias.name)]
+        if alias.pinned:
+            parts.append(m(" [#e0af68]★[/#e0af68]"))
+        parts.append(m("\n"))
+        if alias.note:
+            parts.append(m("[dim]$note[/dim]\n", note=alias.note))
+        rule = "[#2a2b3d]" + "─" * 26 + "[/#2a2b3d]"
+        parts.append(m(
+            rule + "\n\n"
+            "  [dim] host[/dim]  [#c0caf5]$host[/#c0caf5]\n"
+            "  [dim] user[/dim]  [#c0caf5]$user[/#c0caf5]\n"
+            "  [dim] port[/dim]  [#c0caf5]$port[/#c0caf5]\n"
+            "  [dim]  key[/dim]  [#565f89]$badge[/#565f89] [dim]$key[/dim]\n",
+            host=alias.hostname, user=alias.user or "(default)", port=alias.port,
+            badge=_key_badge(alias.key_type), key=key_display or "(none)",
+        ))
+        if alias.group:
+            parts.append(m(f"  [dim]group[/dim]  [{color}]◆ $g[/{color}]\n", g=alias.group))
+        else:
+            parts.append(m("  [dim]group[/dim]  [dim]—[/dim]\n"))
+        parts.append(m("  [dim] ping[/dim]  " + _latency_markup(alias.latency_ms, alias.reachable)))
+        if alias.proxy_jump:
+            parts.append(m("\n  [dim] jump[/dim]  [#565f89]$v[/#565f89]", v=alias.proxy_jump))
+        if alias.wol_mac:
+            parts.append(m("\n  [dim]  wol[/dim]  [#565f89]$v[/#565f89]", v=alias.wol_mac))
+        if alias.last_connect:
+            parts.append(m("\n  [dim] last[/dim]  $v", v=alias.last_connect))
+        keys = "\n".join(
+            f"  [bold #7aa2f7]{k:>2}[/bold #7aa2f7]  [#565f89]{d}[/#565f89]" for k, d in self._KEYS
         )
-        text += (
-            f"{rule}\n"
-            f"\n"
-            f"  [dim]{'host':>5}[/dim]  [#c0caf5]{alias.hostname}[/#c0caf5]\n"
-            f"  [dim]{'user':>5}[/dim]  [#c0caf5]{alias.user or '(default)'}[/#c0caf5]\n"
-            f"  [dim]{'port':>5}[/dim]  [#c0caf5]{alias.port}[/#c0caf5]\n"
-            f"  [dim]{'key':>5}[/dim]  [#565f89]{badge}[/#565f89] [dim]{key_display or '(none)'}[/dim]\n"
-            f"  [dim]{'group':>5}[/dim]  {group_str}\n"
-            f"  [dim]{'ping':>5}[/dim]  {lat}"
-            f"{jump}{wol}{last}\n"
-            f"\n"
-            f"{rule}\n"
-            + "\n".join(
-                f"  [bold #7aa2f7]{k:>2}[/bold #7aa2f7]  [#565f89]{d}[/#565f89]"
-                for k, d in [
-                    ("↵", "connect"),
-                    ("P", "connect + profile"),
-                    ("f", "sftp"),
-                    ("e", "edit"),
-                    ("k", "rotate key"),
-                    ("p", "pin / unpin"),
-                    ("n", "rename"),
-                    ("C", "clone"),
-                    ("g", "tag / group"),
-                    ("x", "remote cmd"),
-                    ("w", "wake-on-LAN"),
-                    ("B", "snippet sync"),
-                    ("D", "delete"),
-                ]
-            ) + "\n"
-        )
-        self.update(text)
+        parts.append(m("\n\n" + rule + "\n" + keys + "\n"))
+        content = parts[0]
+        for p in parts[1:]:
+            content = content + p
+        self.update(content)
 
 
 class HomeScreen(Screen):
@@ -248,8 +263,9 @@ class HomeScreen(Screen):
 
     def __init__(self):
         super().__init__()
-        self._aliases: list[Alias] = []        # visible (filtered) rows
-        self._all_aliases: list[Alias] = []    # everything loaded from disk
+        self._aliases: list[Alias] = []        # visible rows (hidden/filter/sort applied)
+        self._all_aliases: list[Alias] = []    # everything on disk, hidden included
+        self._global_threshold: int | None = 90
         self._filter_text: str = ""
         self._sort_col: str | None = None
         self._sort_reverse: bool = False
@@ -257,6 +273,11 @@ class HomeScreen(Screen):
         self._last_mouse_down: float = 0.0
         self._last_click_row: int = -1
         self._last_click_time: float = 0.0
+        self._keysync_stale: bool = False
+        self._fs_snapshot: tuple | None = None
+        self._col_keys: dict[str, object] = {}
+        self._row_keys: dict[str, object] = {}
+        self._columns_sig: tuple | None = None
 
     def compose(self) -> ComposeResult:
         yield StatsHeader(id="stats-header")
@@ -269,43 +290,69 @@ class HomeScreen(Screen):
         yield KeyBar()
 
     def on_mount(self) -> None:
-        self._startup_audit_check()
         self.query_one("#filter-input", Input).display = False
-        table = self.query_one("#alias-table", DataTable)
-        col_specs = [
-            ("★",       1),
-            ("ALIAS",   None),
-            ("HOST",    None),
-            ("GROUP",   None),
-            ("TYPE",    5),
-            ("LAST",    10),
-            ("KEY AGE", 8),
-            ("PING",    8),
-            ("NOTE",    None),
-        ]
-        self._col_keys: dict[str, object] = {}
-        for label, width in col_specs:
-            key = table.add_column(label, width=width)
-            self._col_keys[label] = key
-        self._load_aliases()
+        self._reload()
         # the (hidden) filter input is first in the DOM and would otherwise
         # grab initial focus, sending every keystroke into an invisible box
-        table.focus()
+        self.query_one("#alias-table", DataTable).focus()
+        self._startup_audit_check()
         self.run_status_probes()
         # notice changes made outside sshop (okssh CLI, other terminals, sync)
-        self._fs_snapshot = files_snapshot()
         self.set_interval(2.0, self._check_external_changes)
 
+    # ── loading / rendering ────────────────────────────────────────────────────
+
     def _check_external_changes(self) -> None:
+        if files_snapshot() != self._fs_snapshot:
+            self._reload()
+
+    def _reload(self) -> None:
+        """Re-read everything from disk, then redraw. Filtering, sorting and
+        the hidden toggle only call _redraw() — no disk I/O per keystroke.
+        (Not "_render": that name is Textual-internal on every Widget.)"""
         snap = files_snapshot()
-        if snap == self._fs_snapshot:
-            return
-        ssh_config_changed = snap[0] != self._fs_snapshot[0]
+        config_changed = self._fs_snapshot is not None and snap[0] != self._fs_snapshot[0]
         self._fs_snapshot = snap
-        self._load_aliases()
-        if ssh_config_changed:
+
+        raw = load_aliases(show_hidden=True)
+        # carry over probe results — reloading from disk must not blank PING
+        probed = {a.name: (a.reachable, a.latency_ms) for a in self._all_aliases
+                  if a.reachable is not None}
+        for a in raw:
+            if a.name in probed:
+                a.reachable, a.latency_ms = probed[a.name]
+        self._all_aliases = raw
+        self._global_threshold = load_audit_threshold()
+
+        try:
+            counts = (sum(1 for a in raw if not is_hidden(a)),
+                      len(load_tunnels()), len(load_snippets()))
+        except Exception:
+            counts = (len(raw), 0, 0)
+        self.app.stats_counts = counts
+        try:
+            self.query_one("#stats-header", StatsHeader).update_stats(*counts)
+        except Exception:
+            pass
+
+        self._redraw()
+        self._check_keysync_stale()
+        if config_changed:
             # aliases were added/removed/edited — refresh reachability too
             self.run_status_probes()
+
+    def _check_keysync_stale(self) -> None:
+        """okssh can't prompt for the key-sync passphrase under sshop, so it
+        flags the archive stale instead — tell the user once per transition."""
+        stale = keysync_stale()
+        if stale and not self._keysync_stale:
+            self.notify(
+                "Key-sync archive is out of date — run "
+                "[bold]okssh sync keys update[/bold] in a terminal to re-encrypt it.",
+                severity="warning",
+                timeout=12,
+            )
+        self._keysync_stale = stale
 
     def _sorted_aliases(self, aliases: list[Alias]) -> list[Alias]:
         if self._sort_col is None:
@@ -322,45 +369,44 @@ class HomeScreen(Screen):
             return (0, [val])
         return sorted(aliases, key=sort_key, reverse=self._sort_reverse)
 
-    def _load_aliases(self) -> None:
+    def _build_columns(self, table: DataTable) -> None:
+        """(Re)create the columns so the sorted one carries ▲/▼ (DataTable has
+        no public way to relabel a column). Also clears the rows."""
+        table.clear(columns=True)
+        indicator = "▼" if self._sort_reverse else "▲"
+        self._col_keys = {}
+        for label, width, attr in _COLUMNS:
+            shown = f"{label} {indicator}" if attr and attr == self._sort_col else label
+            self._col_keys[label] = table.add_column(shown, width=width, key=label)
+        self._columns_sig = (self._sort_col, self._sort_reverse)
+
+    def _redraw(self) -> None:
+        """Hidden toggle + filter + sort over the loaded aliases → table."""
         cur = self._focused_alias()
         cur_name = cur.name if cur else None
-        raw = load_aliases(show_hidden=self._show_hidden)
-        # carry over probe results — reloading from disk must not blank the PING column
-        probed = {a.name: (a.reachable, a.latency_ms) for a in self._all_aliases
-                  if a.reachable is not None}
-        for a in raw:
-            if a.name in probed:
-                a.reachable, a.latency_ms = probed[a.name]
-        self._all_aliases = raw
-        self._aliases = self._sorted_aliases(_filter_aliases(raw, self._filter_text))
+        visible = [a for a in self._all_aliases if self._show_hidden or not is_hidden(a)]
+        self._aliases = self._sorted_aliases(_filter_aliases(visible, self._filter_text))
+
         table = self.query_one("#alias-table", DataTable)
-        table.clear()
+        if self._columns_sig != (self._sort_col, self._sort_reverse):
+            self._build_columns(table)
+        else:
+            table.clear()
 
-        # update column headers to show sort indicator
-        if hasattr(self, "_col_keys"):
-            indicator = "▼" if self._sort_reverse else "▲"
-            for i, label in enumerate(_COL_LABELS):
-                attr = _SORT_COLS[i]
-                col_label = f"{label} {indicator}" if attr == self._sort_col else label
-                try:
-                    table.update_column(self._col_keys[label], label=col_label)
-                except Exception:
-                    pass
-
-        self._row_keys: dict[str, object] = {}
+        self._row_keys = {}
         for a in self._aliases:
             color = _group_color(a.group)
-            pin_col = "[yellow]★[/yellow]" if a.pinned else " "
-            alias_col = f"[bold {'white' if a.agent_loaded else color}]{a.name}[/bold {'white' if a.agent_loaded else color}]"
-            group_col = f"[{color}]◆ {a.group}[/{color}]" if a.group else "[dim]—[/dim]"
-            badge_col = _key_badge(a.key_type)
-            last_col = a.last_connect[:10] if a.last_connect else "—"
-            age_col = _key_age_markup(a.key_age_days, effective_threshold(a))
-            ping_col = _latency_markup(a.latency_ms, a.reachable)
+            name_style = f"bold {'white' if a.agent_loaded else color}"
             rk = table.add_row(
-                pin_col, alias_col, a.hostname, group_col, badge_col,
-                last_col, age_col, ping_col, a.note or "",
+                cell("★", "yellow") if a.pinned else cell(" "),
+                cell(a.name, name_style),
+                cell(a.hostname),
+                cell(f"◆ {a.group}", color) if a.group else cell("—", "dim"),
+                cell(_key_badge(a.key_type)),
+                cell(a.last_connect[:10] if a.last_connect else "—"),
+                _key_age_markup(a.key_age_days, effective_threshold(a, self._global_threshold)),
+                _latency_markup(a.latency_ms, a.reachable),
+                cell(a.note),
                 key=a.name,
             )
             self._row_keys[a.name] = rk
@@ -371,21 +417,12 @@ class HomeScreen(Screen):
                 if a.name == cur_name:
                     table.move_cursor(row=i)
                     break
+        detail = self.query_one("#detail-panel", DetailPanel)
         if self._aliases:
             idx = table.cursor_row if 0 <= table.cursor_row < len(self._aliases) else 0
-            self.query_one("#detail-panel", DetailPanel).show(self._aliases[idx])
+            detail.show(self._aliases[idx])
         else:
-            self.query_one("#detail-panel", DetailPanel).show(None)
-
-        # update header stats
-        try:
-            tunnel_count = len(load_tunnels())
-            snippet_count = len(load_snippets())
-            self.query_one("#stats-header", StatsHeader).update_stats(
-                len(self._aliases), tunnel_count, snippet_count
-            )
-        except Exception:
-            pass
+            detail.show(None)
 
     def _focused_alias(self) -> Alias | None:
         table = self.query_one("#alias-table", DataTable)
@@ -394,17 +431,15 @@ class HomeScreen(Screen):
         return self._aliases[table.cursor_row]
 
     def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
-        # strip indicator suffix to get the base label
-        label = str(event.label).strip().rstrip("▲▼").strip()
-        if label not in _COL_LABELS:
+        attr = _SORT_ATTR.get(str(event.column_key.value))
+        if attr is None:
             return
-        attr = _SORT_COLS[_COL_LABELS.index(label)]
         if self._sort_col == attr:
             self._sort_reverse = not self._sort_reverse
         else:
             self._sort_col = attr
             self._sort_reverse = False
-        self._load_aliases()
+        self._redraw()
 
     def on_mouse_down(self, event) -> None:
         self._last_mouse_down = time.monotonic()
@@ -442,16 +477,17 @@ class HomeScreen(Screen):
         alias = self._focused_alias()
         if alias:
             from sshop.screens.sftp import SftpScreen
-            self.app.push_screen(SftpScreen(alias))
+            self.app.push_screen(SftpScreen(alias, self._all_aliases))
 
     def _after_action(self, result: tuple[int, str], ok_msg: str) -> None:
-        """Shared completion handler: notify + reload on success, error otherwise."""
+        """Shared completion handler: notify + reload on success, error otherwise.
+        Messages carry alias names and okssh output — shown as literal text."""
         code, msg = result
         if code == 0:
-            self.notify(ok_msg)
-            self._load_aliases()
+            self.notify(ok_msg, markup=False)
+            self._reload()
         else:
-            self.notify(f"Error: {msg}", severity="error")
+            self.notify(f"Error: {plain(msg).strip()}", severity="error", markup=False)
 
     def action_wake(self) -> None:
         alias = self._focused_alias()
@@ -460,7 +496,11 @@ class HomeScreen(Screen):
             run_blocking(
                 self,
                 lambda: engine.wake(name),
-                lambda res: self.notify(res[1].strip() or f"Sent WOL to {name}"),
+                lambda res: self.notify(
+                    plain(res[1]).strip() or f"Sent WOL to {name}",
+                    severity="information" if res[0] == 0 else "error",
+                    markup=False,
+                ),
             )
 
     def action_rotate_key(self) -> None:
@@ -468,7 +508,7 @@ class HomeScreen(Screen):
         if alias:
             with self.app.suspend():
                 engine.rotate_key(alias.name)
-            self._load_aliases()
+            self._reload()
 
     def action_pin_toggle(self) -> None:
         alias = self._focused_alias()
@@ -486,12 +526,11 @@ class HomeScreen(Screen):
         alias = self._focused_alias()
         if alias:
             from sshop.modals import RenameModal
-            self.app.push_screen(RenameModal(alias.name), callback=self._on_rename)
+            old = alias.name   # captured now: a background reload may move the cursor
+            self.app.push_screen(RenameModal(old), callback=lambda new: self._on_rename(old, new))
 
-    def _on_rename(self, new_name: str | None) -> None:
-        alias = self._focused_alias()
-        if new_name and alias and new_name != alias.name:
-            old = alias.name
+    def _on_rename(self, old: str, new_name: str | None) -> None:
+        if new_name and new_name != old:
             run_blocking(
                 self,
                 lambda: engine.rename_alias(old, new_name),
@@ -502,24 +541,26 @@ class HomeScreen(Screen):
         alias = self._focused_alias()
         if alias:
             from sshop.modals import CloneModal
-            self.app.push_screen(CloneModal(alias.name), callback=lambda dest: self._on_clone(alias.name, dest))
+            src = alias.name
+            self.app.push_screen(CloneModal(src), callback=lambda dest: self._on_clone(src, dest))
 
     def _on_clone(self, src: str, dest: str | None) -> None:
         if dest:
             with self.app.suspend():
                 engine.clone_alias(src, dest)
-            self._load_aliases()
+            self._reload()
 
     def action_run_cmd(self) -> None:
         alias = self._focused_alias()
         if alias:
             from sshop.modals import RunCmdModal
-            self.app.push_screen(RunCmdModal(alias.name), callback=lambda cmd: self._on_run_cmd(alias.name, cmd))
+            name = alias.name
+            self.app.push_screen(RunCmdModal(name), callback=lambda cmd: self._on_run_cmd(name, cmd))
 
     def _on_run_cmd(self, alias_name: str, cmd: str | None) -> None:
         if cmd:
             from sshop.modals import OutputModal
-            self.notify(f"Running on {alias_name}…")
+            self.notify(f"Running on {alias_name}…", markup=False)
             run_blocking(
                 self,
                 lambda: engine.run_remote(alias_name, cmd),
@@ -552,17 +593,17 @@ class HomeScreen(Screen):
 
     def action_add(self) -> None:
         from sshop.screens.add_alias import AddAliasScreen
-        self.app.push_screen(AddAliasScreen(), callback=lambda _: self._load_aliases())
+        self.app.push_screen(AddAliasScreen(), callback=lambda _: self._reload())
 
     def action_import_key(self) -> None:
         from sshop.screens.import_key import ImportKeyScreen
-        self.app.push_screen(ImportKeyScreen(), callback=lambda _: self._load_aliases())
+        self.app.push_screen(ImportKeyScreen(), callback=lambda _: self._reload())
 
     def action_edit(self) -> None:
         alias = self._focused_alias()
         if alias:
             from sshop.screens.add_edit import AddEditScreen
-            self.app.push_screen(AddEditScreen(alias.name), callback=lambda _: self._load_aliases())
+            self.app.push_screen(AddEditScreen(alias.name), callback=lambda _: self._reload())
 
     def action_tunnels(self) -> None:
         from sshop.screens.tunnels import TunnelsScreen
@@ -583,7 +624,7 @@ class HomeScreen(Screen):
 
     def action_backup(self) -> None:
         from sshop.screens.backup import BackupScreen
-        self.app.push_screen(BackupScreen())
+        self.app.push_screen(BackupScreen(), callback=lambda _: self._reload())
 
     # ── global actions ─────────────────────────────────────────────────────────
 
@@ -593,25 +634,25 @@ class HomeScreen(Screen):
         def _after_audit(open_threshold: bool) -> None:
             if not open_threshold:
                 return
-            current = load_audit_threshold()
-            self.app.push_screen(ThresholdModal(current), _apply_threshold)
+            self.app.push_screen(ThresholdModal(load_audit_threshold()), _apply_threshold)
 
         def _apply_threshold(val: str | None) -> None:
             if val is None:
                 return
             val = val.strip().lower()
-            if val in ("off", "never", "disable"):
-                run_blocking(
-                    self,
-                    lambda: engine.run(["prefer", "audit_threshold", "off"]),
-                    lambda _res: self._after_action((0, ""), "Key rotation auditing disabled."),
-                )
+            if val in ("off", "never", "disable", "disabled"):
+                setting, ok_msg = "off", "Key rotation auditing disabled."
             elif val.isdigit() and int(val) > 0:
-                run_blocking(
-                    self,
-                    lambda: engine.run(["prefer", "audit_threshold", val]),
-                    lambda _res: self._after_action((0, ""), f"Rotation threshold set to {val} days."),
-                )
+                setting, ok_msg = val, f"Rotation threshold set to {val} days."
+            else:
+                self.notify("Threshold must be a positive number of days, or 'off'",
+                            severity="error")
+                return
+            run_blocking(
+                self,
+                lambda: engine.run(["prefer", "audit_threshold", setting]),
+                lambda res: self._after_action((res[0], res[2] or res[1]), ok_msg),
+            )
 
         run_blocking(
             self,
@@ -626,7 +667,7 @@ class HomeScreen(Screen):
 
         def _done(res: tuple[int, str]) -> None:
             code, out = res
-            label = "Sync Diff" + (" [dim](no sync folder configured)[/dim]" if code != 0 else "")
+            label = "Sync Diff" + (" (no sync folder configured)" if code != 0 else "")
             self.app.push_screen(OutputModal(label, out or "No differences found."))
 
         run_blocking(self, engine.diff, _done)
@@ -639,21 +680,42 @@ class HomeScreen(Screen):
         if fmt is None:
             return
         from sshop.modals import OutputModal
-        title = "Export — Ansible inventory" if fmt == "ansible" else "Export — SSH config"
-        run_blocking(
-            self,
-            lambda: engine.export_aliases("ansible" if fmt == "ansible" else ""),
-            lambda res: self.app.push_screen(OutputModal(title, res[1] or "(no output)")),
-        )
+        ansible = fmt == "ansible"
+        stamp = time.strftime("%Y%m%d")
+        path = Path.home() / (f"okssh-inventory-{stamp}.ini" if ansible
+                              else f"okssh-export-{stamp}.txt")
+        title = "Ansible inventory" if ansible else "okssh export"
+
+        def _work() -> tuple[int, str, str]:
+            code, content = engine.export_aliases(ansible=ansible)
+            if code != 0 or not content.strip():
+                return code, content, ""
+            try:
+                path.write_text(content)
+                return code, content, "~" + str(path)[len(str(Path.home())):]
+            except OSError as exc:
+                return code, content, f"(not saved: {exc})"
+
+        def _done(res: tuple[int, str, str]) -> None:
+            code, content, saved = res
+            if code != 0:
+                self.notify(f"Export failed: {plain(content).strip()}", severity="error", markup=False)
+            elif not content.strip():
+                self.notify("No aliases to export", severity="warning")
+            else:
+                self.app.push_screen(OutputModal(f"{title} — saved to {saved}", content))
+
+        run_blocking(self, _work, _done)
 
     def action_tag_alias(self) -> None:
         alias = self._focused_alias()
         if not alias:
             return
         from sshop.modals import TagModal
+        name = alias.name
         self.app.push_screen(
-            TagModal(alias.name, alias.group),
-            callback=lambda result: self._on_tag(alias.name, result),
+            TagModal(name, alias.group),
+            callback=lambda result: self._on_tag(name, result),
         )
 
     def _on_tag(self, alias_name: str, result) -> None:
@@ -680,7 +742,7 @@ class HomeScreen(Screen):
         box.value = ""
         box.display = False
         self._filter_text = ""
-        self._load_aliases()
+        self._redraw()
         self.query_one("#alias-table", DataTable).focus()
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -691,7 +753,7 @@ class HomeScreen(Screen):
                 event.input.value = event.value.replace("/", "")
                 return  # the value change re-fires this handler
             self._filter_text = event.value
-            self._load_aliases()
+            self._redraw()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         # Enter keeps the filter active and moves focus to the table so the
@@ -701,7 +763,7 @@ class HomeScreen(Screen):
 
     def action_toggle_hidden(self) -> None:
         self._show_hidden = not self._show_hidden
-        self._load_aliases()
+        self._redraw()
         state = "showing" if self._show_hidden else "hiding"
         self.notify(f"Now {state} hidden aliases")
 
@@ -723,10 +785,10 @@ class HomeScreen(Screen):
 
     def action_help(self) -> None:
         from sshop.modals import OutputModal
-        self.app.push_screen(OutputModal("Keybindings", _HELP_TEXT))
+        self.app.push_screen(OutputModal("Keybindings", Text.from_markup(_HELP_TEXT)))
 
     def action_refresh(self) -> None:
-        self._load_aliases()
+        self._reload()
         self.run_status_probes()
         self.notify("Refreshed")
 
@@ -735,15 +797,13 @@ class HomeScreen(Screen):
 
     # ── background workers ─────────────────────────────────────────────────────
 
-    @work(thread=True)
     def _startup_audit_check(self) -> None:
-        code, out = engine.audit()
-        # okssh audit exits non-zero when any key is overdue; also check
-        # for the word "overdue" as a belt-and-suspenders guard
-        if code != 0 or "overdue" in out.lower():
-            self.app.call_from_thread(
-                self.notify,
-                "⚠ Key rotation needed — press [bold]u[/bold] for full audit",
+        # Computed from the key ages already loaded — no `okssh audit`
+        # subprocess (whose exit code never signalled overdue keys anyway)
+        due = _rotation_due(self._all_aliases, self._global_threshold)
+        if due:
+            self.notify(
+                f"⚠ {due} key(s) due for rotation — press [bold]u[/bold] for the full audit",
                 severity="warning",
                 timeout=8,
             )
@@ -770,22 +830,27 @@ class HomeScreen(Screen):
 
         # Fallback (okssh without --json): plain TCP connect probes.
         import asyncio
-        probed = [a for a in self._all_aliases if a.hostname]
+        targets = [(a.name, a.hostname, a.port) for a in self._all_aliases if a.hostname]
 
-        def _port(a: Alias) -> int:
+        def _port(p: str) -> int:
             try:
-                return int(a.port)
+                return int(p)
             except (TypeError, ValueError):
                 return 22
 
-        tasks = [engine.probe_alias(a.hostname, _port(a)) for a in probed]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(
+            *(engine.probe_alias(host, _port(port)) for _n, host, port in targets),
+            return_exceptions=True,
+        )
+        outcome = {name: res for (name, _h, _p), res in zip(targets, results)
+                   if not isinstance(res, Exception)}
+        # apply to the CURRENT alias objects — a reload during the await
+        # replaced self._all_aliases
         done = []
-        for alias, result in zip(probed, results):
-            if isinstance(result, Exception):
-                continue
-            alias.reachable, alias.latency_ms = result
-            done.append(alias)
+        for alias in self._all_aliases:
+            if alias.name in outcome:
+                alias.reachable, alias.latency_ms = outcome[alias.name]
+                done.append(alias)
         self._apply_probe_results(done)
 
     def _apply_probe_results(self, aliases: list[Alias]) -> None:
@@ -846,7 +911,7 @@ class ConfirmDelete(ModalScreen[tuple[bool, bool]]):
 
     def compose(self) -> ComposeResult:
         with Grid():
-            yield Label(f"Delete alias [bold]{self._alias_name}[/bold]?")
+            yield Label(m("Delete alias [bold]$a[/bold]?", a=self._alias_name))
             if self._has_key:
                 yield Checkbox("Also delete key files", value=False, id="chk-keys")
             yield Button("Delete", variant="error", id="btn-yes")

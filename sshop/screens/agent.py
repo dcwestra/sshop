@@ -7,7 +7,8 @@ from textual.widgets import DataTable, Static
 from textual.containers import Vertical
 
 from sshop import engine
-from sshop.config import load_aliases, load_tunnels, load_snippets
+from sshop.config import load_aliases
+from sshop.markup import cell, m, plain
 from sshop.worker import run_blocking
 from sshop.widgets.stats_header import StatsHeader
 from sshop.widgets.keybar import KeyBar
@@ -37,33 +38,32 @@ class AgentScreen(Screen):
         ]])
 
     def on_mount(self) -> None:
-        try:
-            self.query_one("#agent-header", StatsHeader).update_stats(
-                len(load_aliases()), len(load_tunnels()), len(load_snippets())
-            )
-        except Exception:
-            pass
         table = self.query_one("#agent-table", DataTable)
         table.add_columns("ALIAS", "STATUS")
         self._load()
 
     def _load(self) -> None:
+        """Alias list from disk now; `okssh agent list` in a worker (it runs
+        ssh-add — never on the UI thread)."""
         self._aliases = [a.name for a in load_aliases()]
-        _, raw = engine.agent_list()
+        self._redraw(None)
+        run_blocking(self, engine.agent_list, lambda res: self._redraw(res[1]))
 
-        # okssh agent list prints one row per alias: "  <alias>  yes|no  <keyfile>"
-        # Match per-line first column so "web" doesn't light up for "web2".
-        loaded: set[str] = set()
-        for line in raw.splitlines():
-            parts = line.split()
-            if len(parts) >= 2 and parts[0] in self._aliases and parts[1] == "yes":
-                loaded.add(parts[0])
-
+    def _redraw(self, raw: str | None) -> None:
+        loaded = engine.parse_agent_list(raw, self._aliases) if raw is not None else set()
         table = self.query_one("#agent-table", DataTable)
+        cur = table.cursor_row
         table.clear()
         for alias in self._aliases:
-            status = "[#9ece6a]● loaded[/#9ece6a]" if alias in loaded else "[dim]○ not loaded[/dim]"
-            table.add_row(f"[bold]{alias}[/bold]", status, key=alias)
+            if raw is None:
+                status = "[dim]…[/dim]"
+            elif alias in loaded:
+                status = "[#9ece6a]● loaded[/#9ece6a]"
+            else:
+                status = "[dim]○ not loaded[/dim]"
+            table.add_row(cell(alias, "bold"), status, key=alias)
+        if 0 <= cur < len(self._aliases):
+            table.move_cursor(row=cur)
 
     def _focused_alias(self) -> str | None:
         table = self.query_one("#agent-table", DataTable)
@@ -74,8 +74,8 @@ class AgentScreen(Screen):
 
     def _after(self, result: tuple[int, str], fallback: str) -> None:
         code, msg = result
-        self.notify(msg.strip() or fallback,
-                    severity="information" if code == 0 else "error")
+        self.notify(plain(msg).strip() or fallback,
+                    severity="information" if code == 0 else "error", markup=False)
         self._load()
 
     def action_add_key(self) -> None:
@@ -91,8 +91,13 @@ class AgentScreen(Screen):
                          lambda res: self._after(res, f"Removed {alias} key from agent"))
 
     def action_clear(self) -> None:
-        run_blocking(self, engine.agent_clear,
-                     lambda res: self._after(res, "Agent cleared"))
+        from sshop.modals import ConfirmModal
+        self.app.push_screen(
+            ConfirmModal(m("Remove [bold]all[/bold] keys from ssh-agent?"), confirm_label="Clear"),
+            callback=lambda ok: run_blocking(
+                self, engine.agent_clear, lambda res: self._after(res, "Agent cleared"),
+            ) if ok else None,
+        )
 
     def action_refresh(self) -> None:
         self._load()

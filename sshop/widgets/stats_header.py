@@ -52,7 +52,16 @@ class StatsHeader(Widget):
     def on_mount(self) -> None:
         self.set_interval(1, self._tick)
         self._tick()
-        self.update_stats(0, 0, 0)
+        # HomeScreen keeps app.stats_counts current on every reload, so
+        # pushed screens just reuse it instead of re-parsing three files
+        counts = getattr(self.app, "stats_counts", None)
+        if counts is None:
+            from sshop.config import counts as load_counts
+            try:
+                counts = load_counts()
+            except Exception:
+                counts = (0, 0, 0)
+        self.update_stats(*counts)
 
     def update_stats(self, aliases: int, tunnels: int, snippets: int) -> None:
         sep = "  [#2a2b3d]·[/#2a2b3d]  "

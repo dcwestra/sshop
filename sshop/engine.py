@@ -5,11 +5,27 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
+import signal
 import subprocess
 import time
+from pathlib import Path
 
-OKSSH_BIN = shutil.which("okssh") or "/usr/local/bin/okssh"
+from sshop.markup import plain
+
+
+def _find_okssh() -> str:
+    # ~/.local/bin is where okssh is usually installed, but it isn't on PATH
+    # when sshop is started from a desktop launcher
+    found = shutil.which("okssh")
+    if found:
+        return found
+    local = Path.home() / ".local" / "bin" / "okssh"
+    return str(local) if local.exists() else "/usr/local/bin/okssh"
+
+
+OKSSH_BIN = _find_okssh()
 
 # Force CLI mode so okssh never tries to open whiptail dialogs
 _CLI_ENV = {**os.environ, "HAS_WHIPTAIL": "0"}
@@ -19,29 +35,57 @@ def run(
     args: list[str],
     input_text: str | None = None,
     extra_env: dict[str, str] | None = None,
+    color: bool = False,
 ) -> tuple[int, str, str]:
-    """Run a okssh subcommand synchronously. Returns (returncode, stdout, stderr)."""
-    env = {**_CLI_ENV, **extra_env} if extra_env else _CLI_ENV
+    """Run a okssh subcommand synchronously. Returns (returncode, stdout, stderr).
+
+    Captured calls never touch sshop's terminal: stdin is /dev/null unless
+    input_text is given, and the child gets its own session so ssh can't
+    open /dev/tty either. An unexpected prompt then fails fast instead of
+    blocking forever on the raw-mode tty Textual owns.
+
+    okssh prints plain text when captured; color=True asks it for ANSI
+    colours anyway (for output popups, which render ANSI).
+    """
+    env = {**_CLI_ENV, **(extra_env or {})}
+    if color:
+        env["CLICOLOR_FORCE"] = "1"
+    stdin_kw = ({"input": input_text} if input_text is not None
+                else {"stdin": subprocess.DEVNULL})
     result = subprocess.run(
         [OKSSH_BIN, *args],
         capture_output=True,
         text=True,
-        input=input_text,
         env=env,
+        start_new_session=True,
+        **stdin_kw,
     )
     return result.returncode, result.stdout, result.stderr
 
 
 async def run_async(args: list[str]) -> tuple[int, str, str]:
-    """Async variant for non-blocking calls from Textual workers."""
+    """Async variant for non-blocking calls from Textual workers (same
+    terminal isolation as run())."""
     proc = await asyncio.create_subprocess_exec(
         OKSSH_BIN,
         *args,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=_CLI_ENV,
+        start_new_session=True,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await proc.communicate()
+    except asyncio.CancelledError:
+        # a cancelled worker (exclusive re-probe, screen closed) must not
+        # leave okssh and its parallel ssh probes running — they share the
+        # process group start_new_session created
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+        raise
     return proc.returncode or 0, stdout.decode(), stderr.decode()
 
 
@@ -120,18 +164,13 @@ def tunnel_remove(name: str) -> tuple[int, str]:
     return code, err or out
 
 
-def open_sftp(alias: str) -> None:
-    """Open SFTP session — blocks until closed."""
-    subprocess.run([OKSSH_BIN, "open", alias], env=_CLI_ENV)
-
-
 def rotate_key(alias: str) -> None:
     """Interactive key rotation — blocks."""
     subprocess.run([OKSSH_BIN, "rotate", alias], env=_CLI_ENV)
 
 
 def run_remote(alias: str, cmd: str) -> tuple[int, str]:
-    code, out, err = run(["run", alias, cmd])
+    code, out, err = run(["run", alias, cmd], color=True)
     return code, out + err
 
 
@@ -156,19 +195,34 @@ def unpin_alias(alias: str) -> tuple[int, str]:
 
 
 def audit() -> tuple[int, str]:
-    code, out, err = run(["audit"])
+    code, out, err = run(["audit"], color=True)
     return code, out + err
 
 
-def export_aliases(fmt: str = "") -> tuple[int, str]:
-    args = ["export"] + ([f"--{fmt}"] if fmt else [])
+def export_aliases(ansible: bool = False) -> tuple[int, str]:
+    """Export content on stdout: okssh's portable [alias] format, or an
+    Ansible INI inventory. Returns (code, content-or-error)."""
+    args = ["export", "--ansible", "-"] if ansible else ["export", "-"]
     code, out, err = run(args)
-    return code, out + err
+    return code, out if code == 0 else (err or out)
 
 
 def agent_list() -> tuple[int, str]:
     code, out, err = run(["agent", "list"])
     return code, out + err
+
+
+def parse_agent_list(raw: str, aliases: list[str]) -> set[str]:
+    """Aliases marked loaded in `okssh agent list` ("<alias>  yes|no  <keyfile>").
+    Compares whole first columns so "web" doesn't light up for "web2";
+    ANSI is stripped in case okssh coloured its output."""
+    wanted = set(aliases)
+    loaded: set[str] = set()
+    for line in plain(raw).splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] in wanted and parts[1] == "yes":
+            loaded.add(parts[0])
+    return loaded
 
 
 def agent_add(alias: str) -> tuple[int, str]:
@@ -192,6 +246,19 @@ def backup_list() -> tuple[int, str]:
     return code, out + err
 
 
+_BACKUP_ROW = re.compile(r"^\s*(\d+)\)\s+(.+)$")
+
+
+def parse_backup_list(raw: str) -> list[tuple[str, str]]:
+    """[(number, "timestamp  (N bytes)")] from `okssh backup` output."""
+    rows = []
+    for line in plain(raw).splitlines():
+        mt = _BACKUP_ROW.match(line)
+        if mt:
+            rows.append((mt.group(1), mt.group(2).strip()))
+    return rows
+
+
 def backup_restore(n: int) -> tuple[int, str]:
     code, out, err = run(["backup", "restore", str(n)], input_text="y\n")
     return code, err or out
@@ -213,7 +280,7 @@ def connect_with_profile(alias: str) -> None:
 
 
 def diff() -> tuple[int, str]:
-    code, out, err = run(["diff"])
+    code, out, err = run(["diff"], color=True)
     return code, out + err
 
 

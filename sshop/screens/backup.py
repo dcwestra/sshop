@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen, ModalScreen
@@ -8,7 +7,7 @@ from textual.widgets import Button, DataTable, Label, Static
 from textual.containers import Grid, Vertical
 
 from sshop import engine
-from sshop.config import load_aliases, load_tunnels, load_snippets
+from sshop.markup import cell, m, plain
 from sshop.worker import run_blocking
 from sshop.widgets.stats_header import StatsHeader
 from sshop.widgets.keybar import KeyBar
@@ -34,36 +33,21 @@ class BackupScreen(Screen):
         ]])
 
     def on_mount(self) -> None:
-        try:
-            self.query_one("#backup-header", StatsHeader).update_stats(
-                len(load_aliases()), len(load_tunnels()), len(load_snippets())
-            )
-        except Exception:
-            pass
         table = self.query_one("#backup-table", DataTable)
         table.add_columns("#", "BACKUP")
         self._load()
 
     def _load(self) -> None:
-        _, raw = engine.backup_list()
+        # `okssh backup` in a worker — never block the UI on a subprocess
+        run_blocking(self, engine.backup_list, lambda res: self._redraw(res[1]))
+
+    def _redraw(self, raw: str) -> None:
         table = self.query_one("#backup-table", DataTable)
         table.clear()
         self._backups = []
-
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            m = re.match(r"(\d+)\)\s+(.+)", line)
-            if m:
-                n, name = m.group(1), m.group(2)
-                self._backups.append(n)
-                table.add_row(
-                    f"[dim]{n}[/dim]",
-                    f"[#7dcfff]{name}[/#7dcfff]",
-                    key=n,
-                )
-
+        for n, name in engine.parse_backup_list(raw):
+            self._backups.append(n)
+            table.add_row(cell(n, "dim"), cell(name, "#7dcfff"), key=n)
         if not self._backups:
             table.add_row("—", "[dim]No backups found[/dim]")
 
@@ -86,15 +70,19 @@ class BackupScreen(Screen):
             )
 
     def _on_restore_confirmed(self, confirmed: bool, n: str) -> None:
-        if confirmed:
-            run_blocking(
-                self,
-                lambda: engine.backup_restore(int(n)),
-                lambda res: self.notify(
-                    res[1].strip() or f"Restored backup #{n}",
-                    severity="information" if res[0] == 0 else "error",
-                ),
+        if not confirmed:
+            return
+
+        def _done(res: tuple[int, str]) -> None:
+            self.notify(
+                plain(res[1]).strip() or f"Restored backup #{n}",
+                severity="information" if res[0] == 0 else "error",
+                markup=False,
             )
+            # restoring snapshots the current config first — the list changed
+            self._load()
+
+        run_blocking(self, lambda: engine.backup_restore(int(n)), _done)
 
 
 class ConfirmRestore(ModalScreen[bool]):
@@ -128,12 +116,16 @@ class ConfirmRestore(ModalScreen[bool]):
 
     def compose(self) -> ComposeResult:
         with Grid():
-            yield Label(
-                f"Restore backup [bold]#{self._backup_n}[/bold]?\n"
-                f"[dim]This will overwrite your current ~/.ssh/config[/dim]"
-            )
+            yield Label(m(
+                "Restore backup [bold]#$n[/bold]?\n"
+                "[dim]This will overwrite your current ~/.ssh/config[/dim]",
+                n=self._backup_n,
+            ))
             yield Button("Restore", variant="warning", id="btn-yes")
             yield Button("Cancel", variant="default", id="btn-no")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "btn-yes")
+
+    def key_escape(self) -> None:
+        self.dismiss(False)

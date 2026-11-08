@@ -4,20 +4,19 @@ from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import Button, DataTable, Static
-from textual.containers import Horizontal, Vertical
+from textual.widgets import Button, Static
+from textual.containers import Horizontal, Vertical, VerticalScroll
 
 from sshop import engine
-from sshop.config import Alias, load_aliases
+from sshop.config import Alias, _parse_preferences
+from sshop.markup import m, plain
 from sshop.widgets.stats_header import StatsHeader
 from sshop.widgets.keybar import KeyBar
 
 
 def _bootstrap_status(alias_name: str) -> str:
     """Read the bootstrap install date from preferences, or empty string."""
-    from sshop.config import _parse_preferences
-    prefs = _parse_preferences()
-    return prefs.get(f"bootstrap_{alias_name}", "")
+    return _parse_preferences().get(f"bootstrap_{alias_name}", "")
 
 
 class BootstrapScreen(Screen):
@@ -45,7 +44,8 @@ class BootstrapScreen(Screen):
                 yield Button("Sync snippets", variant="default", id="btn-update")
                 yield Button("Connect with profile", variant="default", id="btn-profile")
                 yield Button("Remove", variant="error", id="btn-remove")
-            yield Static("", id="bs-output")
+            with VerticalScroll(id="bs-output-scroll"):
+                yield Static("", id="bs-output")
         yield KeyBar(rows=[[
             ("i", "install"), ("u", "sync snippets"), ("P", "connect+profile"),
             ("R", "remove"), ("q", "back"),
@@ -68,44 +68,45 @@ class BootstrapScreen(Screen):
     BootstrapScreen #bs-buttons Button {
         margin-right: 1;
     }
-    BootstrapScreen #bs-output {
+    BootstrapScreen #bs-output-scroll {
         height: 1fr;
         border: solid #2a2b3d;
         padding: 1 2;
-        overflow-y: auto;
     }
     """
 
     def on_mount(self) -> None:
-        try:
-            from sshop.config import load_aliases, load_tunnels, load_snippets
-            self.query_one("#bs-header", StatsHeader).update_stats(
-                len(load_aliases()), len(load_tunnels()), len(load_snippets())
-            )
-        except Exception:
-            pass
         self._refresh_status()
 
     def _refresh_status(self) -> None:
         self._installed = _bootstrap_status(self._alias.name)
-        status_widget = self.query_one("#bs-status", Static)
+        a = self._alias
+        common = dict(name=a.name, host=a.hostname, user=a.user or "(default)")
         if self._installed:
-            status_widget.update(
-                f"[bold #ff9e64]Bootstrap — {self._alias.name}[/bold #ff9e64]\n\n"
-                f"  [#9ece6a]✓  Installed[/#9ece6a]  [dim]{self._installed}[/dim]\n\n"
-                f"  host  [#c0caf5]{self._alias.hostname}[/#c0caf5]  "
-                f"  user  [#c0caf5]{self._alias.user or '(default)'}[/#c0caf5]\n\n"
-                f"  [dim]Ctrl+X s  →  fzf snippet picker active on remote[/dim]"
+            body = m(
+                "[bold #ff9e64]Bootstrap — $name[/bold #ff9e64]\n\n"
+                "  [#9ece6a]✓  Installed[/#9ece6a]  [dim]$date[/dim]\n\n"
+                "  host  [#c0caf5]$host[/#c0caf5]    user  [#c0caf5]$user[/#c0caf5]\n\n"
+                "  [dim]Ctrl+X s  →  fzf snippet picker active on remote[/dim]",
+                date=self._installed, **common,
             )
         else:
-            status_widget.update(
-                f"[bold #ff9e64]Bootstrap — {self._alias.name}[/bold #ff9e64]\n\n"
-                f"  [#565f89]○  Not installed[/#565f89]\n\n"
-                f"  host  [#c0caf5]{self._alias.hostname}[/#c0caf5]  "
-                f"  user  [#c0caf5]{self._alias.user or '(default)'}[/#c0caf5]\n\n"
-                f"  [dim]Install to deploy Ctrl+X s fzf snippet picker to the remote shell.[/dim]"
+            body = m(
+                "[bold #ff9e64]Bootstrap — $name[/bold #ff9e64]\n\n"
+                "  [#565f89]○  Not installed[/#565f89]\n\n"
+                "  host  [#c0caf5]$host[/#c0caf5]    user  [#c0caf5]$user[/#c0caf5]\n\n"
+                "  [dim]Install to deploy Ctrl+X s fzf snippet picker to the remote shell.[/dim]",
+                **common,
             )
+        self.query_one("#bs-status", Static).update(body)
         self.query_one("#bs-output", Static).update("")
+
+    def _show_result(self, code: int, out: str, ok: str, failed: str) -> None:
+        msg = plain(out).strip() or (ok if code == 0 else failed)
+        color = "#9ece6a" if code == 0 else "#f7768e"
+        self.query_one("#bs-output", Static).update(m(f"[{color}]$msg[/{color}]", msg=msg))
+        self.notify(msg.splitlines()[-1] if msg else msg,
+                    severity="information" if code == 0 else "error", markup=False)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_map = {
@@ -118,52 +119,39 @@ class BootstrapScreen(Screen):
             btn_map[event.button.id]()
 
     def action_install(self) -> None:
-        self.query_one("#bs-output", Static).update(
-            "[dim]Running bootstrap install — this may take a moment…[/dim]"
-        )
         with self.app.suspend():
             engine.bootstrap_install(self._alias.name)
         self._refresh_status()
-        self.notify(f"Bootstrap complete for {self._alias.name}")
+        if self._installed:
+            self.notify(f"Bootstrap installed on {self._alias.name}", markup=False)
+        else:
+            self.notify(f"Bootstrap was not installed on {self._alias.name}",
+                        severity="warning", markup=False)
 
     @work(thread=True)
     def action_update(self) -> None:
-        self.app.call_from_thread(
-            self.query_one("#bs-output", Static).update,
-            "[dim]Syncing snippets…[/dim]",
-        )
+        out_widget = self.query_one("#bs-output", Static)
+        self.app.call_from_thread(out_widget.update, "[dim]Syncing snippets…[/dim]")
         code, out = engine.bootstrap_update(self._alias.name)
-        msg = out.strip() or ("Snippets synced." if code == 0 else "Sync failed.")
-        self.app.call_from_thread(
-            self.query_one("#bs-output", Static).update,
-            f"[{'#9ece6a' if code == 0 else '#f7768e'}]{msg}[/{'#9ece6a' if code == 0 else '#f7768e'}]",
-        )
-        self.app.call_from_thread(
-            self.notify,
-            msg,
-            severity="information" if code == 0 else "error",
-        )
+        self.app.call_from_thread(self._show_result, code, out, "Snippets synced.", "Sync failed.")
 
     def action_connect_profile(self) -> None:
         with self.app.suspend():
             engine.connect_with_profile(self._alias.name)
 
-    @work(thread=True)
     def action_remove(self) -> None:
-        self.app.call_from_thread(
-            self.query_one("#bs-output", Static).update,
-            "[dim]Removing bootstrap profile…[/dim]",
+        from sshop.modals import ConfirmModal
+        self.app.push_screen(
+            ConfirmModal(m("Remove the snippet widget from [bold]$a[/bold]?", a=self._alias.name),
+                         confirm_label="Remove"),
+            callback=lambda ok: self._do_remove() if ok else None,
         )
+
+    @work(thread=True)
+    def _do_remove(self) -> None:
+        out_widget = self.query_one("#bs-output", Static)
+        self.app.call_from_thread(out_widget.update, "[dim]Removing bootstrap profile…[/dim]")
         code, out = engine.bootstrap_remove(self._alias.name)
-        msg = out.strip() or ("Removed." if code == 0 else "Remove failed.")
-        self.app.call_from_thread(
-            self.query_one("#bs-output", Static).update,
-            f"[{'#9ece6a' if code == 0 else '#f7768e'}]{msg}[/{'#9ece6a' if code == 0 else '#f7768e'}]",
-        )
         if code == 0:
-            self.app.call_from_thread(self._refresh_status)
-        self.app.call_from_thread(
-            self.notify,
-            msg,
-            severity="information" if code == 0 else "error",
-        )
+            self.app.call_from_thread(self._refresh_status)   # (clears the output pane)
+        self.app.call_from_thread(self._show_result, code, out, "Removed.", "Remove failed.")

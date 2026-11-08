@@ -27,11 +27,11 @@ class Alias:
     proxy_jump: str = ""
     note: str = ""
     group: str = ""
-    wol_mac: str = ""
     server_alive_interval: str = ""
     # populated from preferences
     last_connect: str = ""
     pinned: bool = False
+    wol_mac: str = ""          # okssh stores it as pref wol_mac_<alias>
     # populated at runtime
     key_type: str = ""   # ed25519 / rsa / ecdsa
     key_age_days: int | None = None
@@ -79,7 +79,6 @@ def _parse_ssh_config() -> list[Alias]:
             # extract metadata from comments stored alongside this block
             a.note = current.get("_note", "")
             a.group = current.get("_group", "")
-            a.wol_mac = current.get("_wol", "")
             a.key_type = _key_type_from_path(a.identity_file)
             aliases.append(a)
         current = {}
@@ -99,10 +98,6 @@ def _parse_ssh_config() -> list[Alias]:
                 if m:
                     current["_group"] = m.group(1)
                     continue
-                m = re.match(r"^#\s*WOL:\s*(.+)", stripped, re.IGNORECASE)
-                if m:
-                    current["_wol"] = m.group(1)
-                    continue
 
             if stripped.startswith("#") or not stripped:
                 continue
@@ -112,10 +107,14 @@ def _parse_ssh_config() -> list[Alias]:
                 flush()
                 current_name = m.group(1).strip()
                 continue
+            if re.match(r"^Match\s", stripped, re.IGNORECASE):
+                flush()        # a Match block's options belong to no alias
+                continue
 
-            m = re.match(r"^(\w+)\s+(.+)", stripped)
+            # "Key value", "Key=value" and "Key = value" are all valid
+            m = re.match(r"^(\w+)\s*(?:=\s*|\s+)(.+)", stripped)
             if m and current_name is not None:
-                current[m.group(1).lower()] = m.group(2).strip()
+                current.setdefault(m.group(1).lower(), m.group(2).strip())   # first wins, like ssh
 
     flush()
     return aliases
@@ -166,9 +165,10 @@ def _key_age_days(identity_file: str) -> int | None:
         return None
 
 
-def load_audit_threshold() -> int | None:
+def load_audit_threshold(prefs: dict[str, str] | None = None) -> int | None:
     """Return global audit threshold in days, or None if auditing is disabled."""
-    prefs = _parse_preferences()
+    if prefs is None:
+        prefs = _parse_preferences()
     raw = prefs.get("audit_threshold", "")
     if not raw:
         return 90
@@ -180,13 +180,25 @@ def load_audit_threshold() -> int | None:
         return 90
 
 
-def effective_threshold(alias: Alias) -> int | None:
-    """Return effective audit threshold for this alias, or None if auditing is disabled."""
+_UNSET = object()
+
+
+def effective_threshold(alias: Alias, global_threshold=_UNSET) -> int | None:
+    """Return effective audit threshold for this alias, or None if auditing is
+    disabled. Pass global_threshold (from load_audit_threshold) when calling
+    per row — otherwise every call re-reads the preferences file."""
     if alias.audit_threshold == 0:   # sentinel: per-host disabled
         return None
     if alias.audit_threshold is not None:
         return alias.audit_threshold
-    return load_audit_threshold()
+    if global_threshold is _UNSET:
+        return load_audit_threshold()
+    return global_threshold
+
+
+def is_hidden(alias: Alias) -> bool:
+    """In okssh's reserved "hidden" group (filtered from listings)."""
+    return any(g.strip().lower() == "hidden" for g in alias.group.split(",") if g.strip())
 
 
 def load_aliases(show_hidden: bool = False) -> list[Alias]:
@@ -198,6 +210,7 @@ def load_aliases(show_hidden: bool = False) -> list[Alias]:
     for a in aliases:
         a.last_connect = prefs.get(f"last_connect_{a.name}", "")
         a.pinned = a.name in pinned_set
+        a.wol_mac = prefs.get(f"wol_mac_{a.name}", "")
         a.key_age_days = _key_age_days(a.identity_file)
         raw = prefs.get(f"audit_threshold_{a.name}", "")
         if raw in ("off", "never", "disabled", "disable"):
@@ -211,10 +224,7 @@ def load_aliases(show_hidden: bool = False) -> list[Alias]:
             a.audit_threshold = None
 
     if not show_hidden:
-        aliases = [
-            a for a in aliases
-            if not any(g.strip().lower() == "hidden" for g in a.group.split(",") if g.strip())
-        ]
+        aliases = [a for a in aliases if not is_hidden(a)]
 
     # pinned first, then original config order
     aliases.sort(key=lambda a: (0 if a.pinned else 1))
@@ -304,6 +314,12 @@ def load_templates() -> list[Template]:
     return templates
 
 
+def keysync_stale() -> bool:
+    """True when okssh changed keys without a terminal to ask for the
+    key-sync passphrase (e.g. an add from sshop), so keys.enc is outdated."""
+    return bool(_parse_preferences().get("keys_sync_stale"))
+
+
 def load_bootstrapped_aliases() -> list[str]:
     """Return alias names that have the snippet widget installed."""
     prefs = _parse_preferences()
@@ -312,6 +328,11 @@ def load_bootstrapped_aliases() -> list[str]:
         if prefs.get(f"bootstrap_{a.name}", ""):
             result.append(a.name)
     return result
+
+
+def counts() -> tuple[int, int, int]:
+    """(visible aliases, tunnels, snippets) for the StatsHeader."""
+    return len(load_aliases()), len(load_tunnels()), len(load_snippets())
 
 
 def files_snapshot() -> tuple:

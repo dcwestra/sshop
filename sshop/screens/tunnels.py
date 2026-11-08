@@ -7,7 +7,8 @@ from textual.widgets import DataTable, Static
 from textual.containers import Vertical
 
 from sshop import engine
-from sshop.config import Tunnel, load_aliases, load_tunnels, load_snippets, tunnel_running
+from sshop.config import Tunnel, load_tunnels, tunnel_running
+from sshop.markup import cell, m, plain
 from sshop.worker import run_blocking
 from sshop.widgets.stats_header import StatsHeader
 from sshop.widgets.keybar import KeyBar
@@ -44,12 +45,6 @@ class TunnelsScreen(Screen):
         ]])
 
     def on_mount(self) -> None:
-        try:
-            self.query_one("#tunnel-header", StatsHeader).update_stats(
-                len(load_aliases()), len(load_tunnels()), len(load_snippets())
-            )
-        except Exception:
-            pass
         table = self.query_one("#tunnel-table", DataTable)
         table.add_columns("NAME", "STATUS", "ALIAS", "TYPE", "FORWARD SPEC")
         self._load()
@@ -76,11 +71,11 @@ class TunnelsScreen(Screen):
             status = ("[#9ece6a]● running[/#9ece6a]" if tunnel_running(t.name)
                       else "[dim]○ stopped[/dim]")
             table.add_row(
-                f"[bold]{t.name}[/bold]",
+                cell(t.name, "bold"),
                 status,
-                f"[#7dcfff]{t.alias}[/#7dcfff]",
-                f"[{color}]{t.tunnel_type}[/{color}]",
-                t.forward_spec,
+                cell(t.alias, "#7dcfff"),
+                cell(t.tunnel_type, color),
+                cell(t.forward_spec),
                 key=t.name,
             )
         if cur_name:
@@ -98,15 +93,15 @@ class TunnelsScreen(Screen):
 
     def _after(self, result: tuple[int, str], fallback: str) -> None:
         code, msg = result
-        self.notify(msg.strip() or fallback,
-                    severity="information" if code == 0 else "error")
+        self.notify(plain(msg).strip() or fallback,
+                    severity="information" if code == 0 else "error", markup=False)
         self._load()
 
     def action_start(self) -> None:
         t = self._focused_tunnel()
         if t:
             name = t.name
-            self.notify(f"Starting {name}…")
+            self.notify(f"Starting {name}…", markup=False)
             run_blocking(self, lambda: engine.tunnel_start(name),
                          lambda res: self._after(res, f"Started {name}"))
 
@@ -129,8 +124,8 @@ class TunnelsScreen(Screen):
         from sshop.modals import ConfirmModal
         name = t.name
         self.app.push_screen(
-            ConfirmModal(f"Remove tunnel [bold]{name}[/bold]?\n"
-                         f"[dim]Stops it first if running[/dim]",
+            ConfirmModal(m("Remove tunnel [bold]$n[/bold]?\n[dim]Stops it first if running[/dim]",
+                           n=name),
                          confirm_label="Remove"),
             callback=lambda ok: run_blocking(
                 self, lambda: engine.tunnel_remove(name),

@@ -9,9 +9,10 @@ from textual.widgets import Button, Input, Label, Select, Static
 from textual.containers import Horizontal, ScrollableContainer
 
 from sshop import engine
-from sshop.config import load_aliases, load_tunnels, load_snippets
-from sshop.screens.import_key import _FilePicker
+from sshop.markup import plain
+from sshop.screens.import_key import _FilePicker, clean_path
 from sshop.widgets.stats_header import StatsHeader
+from sshop.worker import run_blocking
 from sshop.widgets.keybar import KeyBar
 
 _KEY_TYPES = [("ed25519 (recommended)", "ed25519"), ("rsa", "rsa"), ("ecdsa", "ecdsa")]
@@ -150,12 +151,6 @@ class AddAliasScreen(Screen):
         yield KeyBar(rows=[[("F5", "browse key"), ("↵", "add"), ("Esc", "cancel")]])
 
     def on_mount(self) -> None:
-        try:
-            self.query_one("#aa-header", StatsHeader).update_stats(
-                len(load_aliases()), len(load_tunnels()), len(load_snippets())
-            )
-        except Exception:
-            pass
         # import section hidden until user switches
         self.query_one("#imp-section").display = False
         self.query_one("#aa-alias", Input).focus()
@@ -178,6 +173,11 @@ class AddAliasScreen(Screen):
     def _on_file_picked(self, path: str | None) -> None:
         if path:
             self.query_one("#aa-keyfile-input", Input).value = path
+
+    def on_input_submitted(self, _event: Input.Submitted) -> None:
+        # Enter in any field submits (the key bar advertises ↵ add);
+        # validation below reports whatever is still missing
+        self._do_add()
 
     # ── buttons ───────────────────────────────────────────────────────────────
 
@@ -204,7 +204,7 @@ class AddAliasScreen(Screen):
         is_import  = source_sel.value == "import"
 
         if is_import:
-            key_file = self.query_one("#aa-keyfile-input", Input).value.strip()
+            key_file = clean_path(self.query_one("#aa-keyfile-input", Input).value)
             key_type = ""
             password = ""
         else:
@@ -223,52 +223,44 @@ class AddAliasScreen(Screen):
         if is_import:
             if not key_file:
                 errors.append("Key file path is required")
-            elif not Path(key_file).expanduser().exists():
+            elif not Path(key_file).expanduser().is_file():
                 errors.append(f"Key file not found: {key_file}")
         else:
             if not password:
                 errors.append("Password is required for ssh-copy-id")
         if errors:
-            self.notify("\n".join(errors), severity="error", timeout=6)
+            self.notify("\n".join(errors), severity="error", timeout=6, markup=False)
             return
 
-        port = int(port_s) if port_s.isdigit() else 22
+        if port_s and not (port_s.isdigit() and 0 < int(port_s) < 65536):
+            self.notify("Port must be a number between 1 and 65535", severity="error")
+            return
+        port = int(port_s) if port_s else 22
 
         # Disable the Add button to prevent double-submit during ssh-copy-id
         btn = self.query_one("#btn-add", Button)
+        if btn.disabled:
+            return
         btn.disabled = True
         btn.label = "Working…"
 
-        self.run_worker(
-            self._run_add(alias, host, user, port, key_type, password, key_file, note, group, jump),
-            exclusive=True,
-        )
-
-    async def _run_add(
-        self,
-        alias: str, host: str, user: str, port: int,
-        key_type: str, password: str, key_file: str,
-        note: str, group: str, jump: str,
-    ) -> None:
-        import asyncio
-        loop = asyncio.get_event_loop()
-        code, msg = await loop.run_in_executor(
-            None,
+        run_blocking(
+            self,
             lambda: engine.add_alias(
                 alias=alias, host=host, user=user, port=port,
                 key_type=key_type, password=password, key_file=key_file,
                 note=note, group=group, jump=jump,
             ),
+            lambda res: self._on_add_done(res[0], res[1], alias),
         )
-        # already back on the event loop after await — call_from_thread would raise here
-        self._on_add_done(code, msg, alias)
 
     def _on_add_done(self, code: int, msg: str, alias: str) -> None:
         btn = self.query_one("#btn-add", Button)
         btn.disabled = False
         btn.label = "Add Alias"
         if code == 0:
-            self.notify(f"Added [bold]{alias}[/bold]", severity="information")
+            self.notify(f"Added {alias}", severity="information", markup=False)
             self.dismiss(True)
         else:
-            self.notify(msg.strip() or "Add failed", severity="error", timeout=10)
+            self.notify(plain(msg).strip() or "Add failed", severity="error", timeout=10,
+                        markup=False)

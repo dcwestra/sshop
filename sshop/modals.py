@@ -1,17 +1,26 @@
-"""Small input modals shared across screens."""
+"""Small input modals shared across screens.
+
+Titles, labels and messages are shown as literal text (or as a Content the
+caller built with sshop.markup.m) — never parsed as markup, because they
+carry alias names, groups and okssh output.
+"""
 
 from __future__ import annotations
 
 from rich.text import Text
 from textual.app import ComposeResult
+from textual.binding import Binding
+from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static
-from textual.containers import Grid, Vertical
+from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
+
+from sshop.markup import m
 
 
-def _render(content: str) -> Text:
-    """Convert okssh ANSI output to a Rich Text object for clean modal display."""
-    return Text.from_ansi(content)
+def _as_content(value: str | Content | Text) -> Content | Text:
+    """Plain str → literal Content; Content/Text pass through."""
+    return Content(value) if isinstance(value, str) else value
 
 
 class _InputModal(ModalScreen[str | None]):
@@ -52,10 +61,9 @@ class _InputModal(ModalScreen[str | None]):
         self._default = default
 
     def compose(self) -> ComposeResult:
-        from textual.containers import Horizontal
         with Vertical():
-            yield Static(f"[bold]{self._title}[/bold]")
-            yield Label(self._label)
+            yield Static(m("[bold]$t[/bold]", t=self._title))
+            yield Label(Content(self._label))
             yield Input(value=self._default, placeholder=self._placeholder, id="modal-input")
             with Horizontal(id="btn-row"):
                 yield Button("OK", variant="primary", id="btn-ok")
@@ -119,7 +127,10 @@ class ThresholdModal(_InputModal):
 
 
 class ConfirmModal(ModalScreen[bool]):
-    """Generic yes/no confirmation. Returns True if confirmed."""
+    """Generic yes/no confirmation. Returns True if confirmed.
+
+    message: plain text, or a Content built with sshop.markup.m() when it
+    needs styling around user-supplied names."""
 
     DEFAULT_CSS = """
     ConfirmModal {
@@ -144,14 +155,14 @@ class ConfirmModal(ModalScreen[bool]):
     ConfirmModal Button { width: 100%; }
     """
 
-    def __init__(self, message: str, confirm_label: str = "Confirm"):
+    def __init__(self, message: str | Content, confirm_label: str = "Confirm"):
         super().__init__()
         self._message = message
         self._confirm_label = confirm_label
 
     def compose(self) -> ComposeResult:
         with Grid():
-            yield Label(self._message)
+            yield Label(_as_content(self._message))
             yield Button(self._confirm_label, variant="error", id="btn-yes")
             yield Button("Cancel", variant="default", id="btn-no")
 
@@ -199,11 +210,11 @@ class TagModal(ModalScreen):
         self._current = current_groups
 
     def compose(self) -> ComposeResult:
-        from textual.containers import Horizontal
         current_txt = self._current if self._current else "(no groups)"
         with Vertical():
-            yield Static(f"[bold #ff9e64]Manage groups[/bold #ff9e64]  [dim]→[/dim]  [bold]{self._alias}[/bold]")
-            yield Static(f"Current: [#7dcfff]{current_txt}[/#7dcfff]", id="current-label")
+            yield Static(m("[bold #ff9e64]Manage groups[/bold #ff9e64]  [dim]→[/dim]  [bold]$a[/bold]",
+                           a=self._alias))
+            yield Static(m("Current: [#7dcfff]$g[/#7dcfff]", g=current_txt), id="current-label")
             yield Input(placeholder="group name, e.g. homelab", id="modal-input")
             with Horizontal(id="btn-row"):
                 yield Button("Add tag", variant="success", id="btn-add")
@@ -234,14 +245,15 @@ class TagModal(ModalScreen):
 
 
 class ExportFormatModal(ModalScreen):
-    """Pick export format: normal SSH config or Ansible inventory."""
+    """Pick export format: okssh's portable export file or an Ansible inventory.
+    Returns "okssh", "ansible" or None."""
 
     DEFAULT_CSS = """
     ExportFormatModal {
         align: center middle;
     }
     ExportFormatModal > Vertical {
-        width: 50;
+        width: 60;
         height: auto;
         padding: 1 2;
         border: solid #7aa2f7;
@@ -259,18 +271,18 @@ class ExportFormatModal(ModalScreen):
     """
 
     def compose(self) -> ComposeResult:
-        from textual.containers import Horizontal
         with Vertical():
             yield Static("[bold #ff9e64]Export aliases[/bold #ff9e64]")
-            yield Static("\n[dim]Choose export format:[/dim]")
+            yield Static("\n[dim]Saved to your home folder and shown here.\n"
+                         "okssh export → re-import with okssh import <file>[/dim]")
             with Horizontal(id="btn-row"):
-                yield Button("SSH config", variant="primary", id="btn-ssh")
+                yield Button("okssh export", variant="primary", id="btn-okssh")
                 yield Button("Ansible inventory", variant="success", id="btn-ansible")
                 yield Button("Cancel", variant="default", id="btn-cancel")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-ssh":
-            self.dismiss("ssh")
+        if event.button.id == "btn-okssh":
+            self.dismiss("okssh")
         elif event.button.id == "btn-ansible":
             self.dismiss("ansible")
         else:
@@ -280,45 +292,65 @@ class ExportFormatModal(ModalScreen):
         self.dismiss(None)
 
 
-class OutputModal(ModalScreen):
-    """Display command output with a Close button."""
+_OUTPUT_CSS = """
+{cls} {{
+    align: center middle;
+}}
+{cls} > Vertical {{
+    width: 90%;
+    max-width: 110;
+    height: 80%;
+    padding: 1 2;
+    border: solid $primary;
+    background: $surface;
+}}
+{cls} #output-scroll {{
+    height: 1fr;
+    border: none;
+}}
+{cls} #output-scroll:focus {{
+    background-tint: $foreground 3%;
+}}
+{cls} #btn-row {{
+    height: 3;
+    margin-top: 1;
+}}
+"""
 
-    DEFAULT_CSS = """
-    OutputModal {
-        align: center middle;
-    }
-    OutputModal > Vertical {
-        width: 80;
-        height: 30;
-        padding: 1 2;
-        border: solid $primary;
-        background: $surface;
-    }
-    OutputModal Static#output {
-        height: 1fr;
-        overflow-y: auto;
-    }
-    OutputModal #btn-row {
-        height: 3;
-        align-horizontal: right;
-        margin-top: 1;
-    }
+
+class OutputModal(ModalScreen):
+    """Scrollable command output with a Close button.
+
+    content: a str is treated as okssh output (ANSI colours rendered, never
+    markup); pass a Text/Content to show pre-styled text such as help."""
+
+    BINDINGS = [Binding("q", "close", "Close", show=False)]
+    DEFAULT_CSS = _OUTPUT_CSS.format(cls="OutputModal") + """
+    OutputModal #btn-row { align-horizontal: right; }
     """
 
-    def __init__(self, title: str, content: str):
+    def __init__(self, title: str, content: str | Text | Content):
         super().__init__()
         self._title = title
         self._content = content
 
     def compose(self) -> ComposeResult:
-        from textual.containers import Horizontal
+        body = Text.from_ansi(self._content) if isinstance(self._content, str) else self._content
         with Vertical():
-            yield Static(f"[bold]{self._title}[/bold]")
-            yield Static(_render(self._content), id="output")
+            yield Static(m("[bold]$t[/bold]", t=self._title))
+            with VerticalScroll(id="output-scroll"):
+                yield Static(body, id="output")
             with Horizontal(id="btn-row"):
                 yield Button("Close", variant="primary", id="btn-close")
 
+    def on_mount(self) -> None:
+        # focus the scroll area so ↑/↓/PgUp/PgDn/Home/End scroll right away
+        self.query_one("#output-scroll", VerticalScroll).focus()
+
     def on_button_pressed(self, _event: Button.Pressed) -> None:
+        self.dismiss()
+
+    def action_close(self) -> None:
         self.dismiss()
 
     def key_escape(self) -> None:
@@ -326,31 +358,12 @@ class OutputModal(ModalScreen):
 
 
 class AuditOutputModal(ModalScreen[bool]):
-    """Key audit results with a 'Set Threshold' button alongside Close."""
+    """Key audit results (scrollable) with a 'Set Threshold' button."""
 
-    DEFAULT_CSS = """
-    AuditOutputModal {
-        align: center middle;
-    }
-    AuditOutputModal > Vertical {
-        width: 80;
-        height: 30;
-        padding: 1 2;
-        border: solid $primary;
-        background: $surface;
-    }
-    AuditOutputModal Static#output {
-        height: 1fr;
-        overflow-y: auto;
-    }
-    AuditOutputModal #btn-row {
-        height: 3;
-        align-horizontal: left;
-        margin-top: 1;
-    }
-    AuditOutputModal #btn-close {
-        dock: right;
-    }
+    BINDINGS = [Binding("q", "close", "Close", show=False)]
+    DEFAULT_CSS = _OUTPUT_CSS.format(cls="AuditOutputModal") + """
+    AuditOutputModal #btn-row { align-horizontal: left; }
+    AuditOutputModal #btn-close { dock: right; }
     """
 
     def __init__(self, content: str):
@@ -358,16 +371,22 @@ class AuditOutputModal(ModalScreen[bool]):
         self._content = content
 
     def compose(self) -> ComposeResult:
-        from textual.containers import Horizontal
         with Vertical():
             yield Static("[bold]Key Audit[/bold]")
-            yield Static(_render(self._content), id="output")
+            with VerticalScroll(id="output-scroll"):
+                yield Static(Text.from_ansi(self._content), id="output")
             with Horizontal(id="btn-row"):
                 yield Button("Set Threshold", variant="default", id="btn-threshold")
                 yield Button("Close", variant="primary", id="btn-close")
 
+    def on_mount(self) -> None:
+        self.query_one("#output-scroll", VerticalScroll).focus()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "btn-threshold")
+
+    def action_close(self) -> None:
+        self.dismiss(False)
 
     def key_escape(self) -> None:
         self.dismiss(False)

@@ -6,15 +6,14 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Input, Static
 from textual.containers import Vertical
 
-from sshop.config import load_aliases, load_history, load_tunnels, load_snippets
+from sshop.config import load_history
+from sshop.markup import cell
 from sshop.widgets.stats_header import StatsHeader
 from sshop.widgets.keybar import KeyBar
 
 
-def _exit_markup(code: str) -> str:
-    if code == "0":
-        return "[#9ece6a]0[/#9ece6a]"
-    return f"[#e0af68]{code}[/#e0af68]"
+def _exit_markup(code: str):
+    return cell(code, "#9ece6a" if code == "0" else "#e0af68")
 
 
 def _duration_str(raw: str) -> str:
@@ -32,51 +31,68 @@ def _duration_str(raw: str) -> str:
 
 class LogScreen(Screen):
     BINDINGS = [
-        Binding("escape,q", "dismiss", "Back"),
+        Binding("escape", "back", "Back"),
+        Binding("q", "dismiss", "Back", show=False),
         Binding("c", "clear_filter", "Clear filter", show=False),
+        Binding("/", "focus_filter", "Filter", show=False),
     ]
 
     def __init__(self, alias_filter: str | None = None):
         super().__init__()
         self._filter = alias_filter
+        self._entries: list[dict[str, str]] = []
 
     def compose(self) -> ComposeResult:
         yield StatsHeader(id="log-header")
         with Vertical(id="log-body"):
             yield Static(" [bold]Connection Log[/bold]", id="log-title")
-            yield Input(placeholder="filter by alias…", id="log-filter")
+            yield Input(placeholder="filter by alias… (/ to focus, Esc to leave)", id="log-filter")
             yield DataTable(id="log-table", cursor_type="row", zebra_stripes=True)
         yield KeyBar(rows=[[
-            ("c", "clear filter"), ("q", "back"),
+            ("/", "filter"), ("c", "clear filter"), ("q", "back"),
         ]])
 
     def on_mount(self) -> None:
-        try:
-            self.query_one("#log-header", StatsHeader).update_stats(
-                len(load_aliases()), len(load_tunnels()), len(load_snippets())
-            )
-        except Exception:
-            pass
         table = self.query_one("#log-table", DataTable)
         table.add_columns("TIMESTAMP", "ALIAS", "DURATION", "EXIT")
+        # read once; filtering is in memory (the log grows without bound)
+        self._entries = load_history()
         if self._filter:
             self.query_one("#log-filter", Input).value = self._filter
-        self._load(self._filter)
+        self._redraw(self._filter)
+        # the filter Input is first in the DOM and would otherwise take focus,
+        # swallowing q / c as filter text
+        table.focus()
 
-    def _load(self, alias_filter: str | None = None) -> None:
-        entries = load_history(alias_filter or None)
+    def _redraw(self, alias_filter: str | None = None) -> None:
+        needle = (alias_filter or "").lower()
         table = self.query_one("#log-table", DataTable)
         table.clear()
-        for e in entries:
+        for e in self._entries:
+            if needle and needle not in e["alias"].lower():
+                continue
             table.add_row(
-                f"[dim]{e['timestamp']}[/dim]",
-                f"[bold #7dcfff]{e['alias']}[/bold #7dcfff]",
+                cell(e["timestamp"], "dim"),
+                cell(e["alias"], "bold #7dcfff"),
                 _duration_str(e["duration"]),
                 _exit_markup(e["exit_code"]),
             )
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        self._load(event.value.strip() or None)
+        self._redraw(event.value.strip() or None)
+
+    def on_input_submitted(self, _event: Input.Submitted) -> None:
+        self.query_one("#log-table", DataTable).focus()
+
+    def action_focus_filter(self) -> None:
+        self.query_one("#log-filter", Input).focus()
+
+    def action_back(self) -> None:
+        # Esc in the filter returns to the table; Esc on the table leaves
+        if isinstance(self.focused, Input):
+            self.query_one("#log-table", DataTable).focus()
+        else:
+            self.dismiss()
 
     def action_clear_filter(self) -> None:
         self.query_one("#log-filter", Input).value = ""
