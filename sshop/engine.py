@@ -85,6 +85,12 @@ async def run_async(args: list[str]) -> tuple[int, str, str]:
             os.killpg(proc.pid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
             pass
+        # reap it now — an unawaited child lingers as a zombie and its
+        # transport warns when collected after the loop is gone
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=2)
+        except (asyncio.TimeoutError, asyncio.CancelledError, ProcessLookupError):
+            pass
         raise
     return proc.returncode or 0, stdout.decode(), stderr.decode()
 
